@@ -1,0 +1,96 @@
+.TH STASIS 5 "2025-09-25" "Stasis 0.1" "User Manuals"
+.SH NAME
+stasis \- simple idle manager configuration for Wayland compositors
+
+.SH SYNOPSIS
+Stasis is configured via a Rune file (default: ~/.config/stasis/stasis.rune).
+To run it automatically, add it to your compositor's autostart section (e.g., Niri, Hyprland, River).
+
+.SH DESCRIPTION
+Stasis monitors user idle time and can run commands on idle, suspend, or lock events.
+It supports media monitoring and application-specific idle inhibitions.
+Tested with the Niri compositor; idle app inhibition also works on Hyprland and River.
+
+.SH CONFIGURATION
+The configuration file is written in Rune. Key sections:
+
+.TP
+idle
+Commands and behavior for idle state. Options:
+
+.TP
+resume_command
+Command to run when activity resumes.
+
+.TP
+monitor_media
+true/false to pause idle on media playback.
+
+.TP
+respect_idle_inhibitors
+true/false
+
+.TP
+inhibit_apps
+List of apps to ignore for idle. Supports literal names and Rust-style
+regex patterns (handled by Stasis; Rune itself has no regex capabilities).
+Currently, this feature only works on Niri, Hyprland, and River.
+
+.TP
+lock_screen
+Section defining automatic screen locking:
+
+.TP
+timeout
+Seconds before running the lock command.
+
+.TP
+command
+Command to run (e.g., hyprlock).
+
+.TP
+suspend
+Section defining automatic suspend:
+
+.TP
+timeout
+Seconds before suspend.
+
+.TP
+command
+Command to run (e.g., systemctl suspend).
+
+.TP
+custom_command
+Optional section to define additional commands.
+
+.SH FILES
+~/.config/stasis/stasis.rune
+: Default configuration file.
+
+.SH EXAMPLES
+Autostart Stasis in Niri (or other compositors):
+
+.nf
+# Add this line to your compositor's autostart config
+exec stasis
+.fi
+
+Lock the screen automatically after 5 minutes of idle using Hyprlock:
+
+.nf
+lock_screen:
+    timeout = 300
+    command "hyprlock"
+.fi
+
+Suspend automatically after 30 minutes of idle:
+
+.nf
+suspend:
+    timeout = 1800
+    command "systemctl suspend"
+.fi
+
+.SH SEE ALSO
+systemd(1), niri(5), hyprland(5), river(5)

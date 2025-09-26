@@ -1,0 +1,50 @@
+@description "Stasis configuration file"
+
+# Default timeout in seconds (5 minutes)
+app_default_timeout 300
+
+idle:
+  # Command to run when resuming from idle state
+  resume_command "systemctl resume-sessions"
+  
+  # Monitor media playback to prevent idle during video/music
+  monitor_media true
+  
+  # Respect Wayland idle inhibitor protocols from applications
+  respect_idle_inhibitors true
+  
+  # Applications that should prevent idle when running
+  # Supports literal names and regex patterns with r"pattern" syntax
+  inhibit_apps [
+    "vlc"                 # Video player
+    "Spotify"             # Music streaming
+    "mpv"                 # Media player
+    r".*\.exe"            # Any Windows executable (Wine/Bottles)
+    r"steam_app_.*"       # Steam games
+    r"firefox.*"          # Firefox and variants
+  ]
+  
+  # Lock screen after idle timeout
+  lock_screen:
+    timeout = app_default_timeout   # Use variable reference
+    command "swaylock"              # Your preferred screen locker
+  end
+  
+  # Suspend system after longer idle period
+  suspend:
+    timeout 1800        # 30 minutes
+    command "systemctl suspend"
+  end
+  
+  # Example custom actions - you can add any action you want!
+  hibernate:
+    timeout 3600        # 1 hour
+    command "systemctl hibernate"
+  end
+  
+  shutdown:
+    timeout 7200        # 2 hours  
+    command "systemctl poweroff"
+  end
+end
+
