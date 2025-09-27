@@ -2,9 +2,13 @@ use eyre::Result;
 use std::sync::Arc;
 use std::path::PathBuf;
 use tokio::task::LocalSet;
+use clap::Parser;
+use tokio::net::UnixListener;
+use std::fs;
 
 mod app_inhibit;
 mod config;
+mod control;
 mod idle_timer;
 mod libinput;
 mod wayland_input;
@@ -12,45 +16,101 @@ mod media;
 mod actions;
 mod utils;
 
-use utils::log_to_cache;
+use utils::{log_message, log_error_message};
 
-#[tokio::main(flavor = "current_thread")] // single-threaded runtime for !Send tasks
+#[derive(Parser, Debug)]
+#[command(
+    name = "Stasis",
+    version = env!("CARGO_PKG_VERSION"), 
+    about = "Capable idle manager for Wayland", 
+    long_about = None
+)]
+struct Args {
+    #[arg(short, long, action)]
+    reload_config: bool,
+
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    #[arg(short, long, action)]
+    verbose: bool,
+}
+
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // Resolve config path with fallback
-    let config_path = get_config_path()?;
+    let args = Args::parse();
 
-    // Load configuration
+    // Reload mode bypasses single instance
+    if args.reload_config {
+        use tokio::net::UnixStream;
+        use tokio::io::AsyncWriteExt;
+
+        let socket_path = "/tmp/stasis.sock";
+        match UnixStream::connect(socket_path).await {
+            Ok(mut stream) => {
+                let _ = stream.write_all(b"reload").await;
+                log_message("Sent reload request to running instance");
+            }
+            Err(_) => {
+                log_error_message("No running instance found");
+            }
+        }
+
+        return Ok(());
+    }
+
+    // --- SINGLE INSTANCE CHECK ---
+    let socket_path = "/tmp/stasis.sock";
+
+    // Try connecting first
+    if let Ok(mut _stream) = tokio::net::UnixStream::connect(socket_path).await {
+        log_error_message("Another instance is already running.");
+        return Ok(());
+    }
+
+    // If connection fails, remove stale socket
+    let _ = fs::remove_file(socket_path);
+
+    let listener = match UnixListener::bind(socket_path) {
+        Ok(l) => l,
+        Err(_) => {
+            log_error_message("Another instance is already running.");
+            return Ok(());
+        }
+    };
+
+    // --- CONFIG ---
+    let config_path = if let Some(path) = args.config {
+        path
+    } else {
+        get_config_path()?
+    };
+
+    if args.verbose {
+        log_message("Verbose mode enabled");
+        utils::set_verbose(true);
+    }
+
     let cfg = Arc::new(config::load_config(config_path.to_str().unwrap())?);
-
-    // Shared IdleTimer (tokio::sync::Mutex for all tasks)
     let idle_timer = Arc::new(tokio::sync::Mutex::new(idle_timer::IdleTimer::new(&cfg)));
 
-    // Spawn periodic fallback idle task
     idle_timer::spawn_idle_task(Arc::clone(&idle_timer));
-
-    // Spawn libinput monitoring
     libinput::spawn_libinput_task(Arc::clone(&idle_timer));
-
-    // --- Spawn App Inhibit Task ---
     app_inhibit::spawn_app_inhibit_task(Arc::clone(&idle_timer), Arc::clone(&cfg));
 
-    // Tokio LocalSet for !Send tasks (Wayland, MPRIS)
+    // Use the pre-bound listener for control socket
+    control::spawn_control_socket_with_listener(Arc::clone(&idle_timer), config_path.to_str().unwrap().to_string(), listener);
+
     let local = LocalSet::new();
 
     local.run_until(async {
-        // Setup Wayland idle/compositor monitoring
         wayland_input::setup(Arc::clone(&idle_timer), cfg.respect_idle_inhibitors).await?;
-
-        // Optional media (MPRIS) monitoring
         if cfg.monitor_media {
             media::setup(Arc::clone(&idle_timer))?;
         }
+        log_message(&format!("Running. Idle actions loaded: {}", cfg.actions.len()));
 
-        log_to_cache(&format!("[Stasis] Running. Idle actions loaded: {}", cfg.actions.len()));
-
-        // Keep main task alive indefinitely
         std::future::pending::<()>().await;
-
         #[allow(unreachable_code)]
         Ok::<(), eyre::Report>(())
     })
@@ -59,24 +119,20 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Returns the appropriate config file path, falling back to /etc/stasis/stasis.rune
+/// Returns the appropriate config file path
 fn get_config_path() -> Result<PathBuf> {
-    // Primary: $HOME/.config/stasis/stasis.rune
     if let Some(mut path) = dirs::home_dir() {
         path.push(".config/stasis/stasis.rune");
         if path.exists() {
             return Ok(path);
         }
     }
-
-    // Fallback: /etc/stasis/stasis.rune
     let fallback = PathBuf::from("/etc/stasis/stasis.rune");
     if fallback.exists() {
         return Ok(fallback);
     }
-
-    // If neither exists, error out
     Err(eyre::eyre!(
         "Could not find stasis configuration file in home or /etc/stasis/"
     ))
 }
+

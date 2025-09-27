@@ -6,7 +6,7 @@ use serde_json::Value;
 use sysinfo::{System, RefreshKind, ProcessRefreshKind, ProcessesToUpdate};
 
 use crate::config::IdleConfig;
-use crate::utils::log_to_cache;
+use crate::utils::log_message;
 
 /// Tracks currently running apps to inhibit idle
 pub struct AppInhibitor {
@@ -41,7 +41,7 @@ impl AppInhibitor {
         // Only print new apps that weren't active last time
         for app in &new_active_apps {
             if !self.active_apps.contains(app) {
-                log_to_cache(&format!("[Stasis] App inhibit active: {}", app));
+                log_message(&format!("App inhibit active: {}", app));
             }
         }
 
@@ -94,7 +94,7 @@ impl AppInhibitor {
 
         // Log only once
         if !DESKTOP_PRINTED.load(Ordering::Relaxed) {
-            log_to_cache(&format!("[Stasis] XDG_CURRENT_DESKTOP: {}", desktop));
+            log_message(&format!("XDG_CURRENT_DESKTOP: {}", desktop));
             DESKTOP_PRINTED.store(true, Ordering::Relaxed);
         }
 
@@ -254,16 +254,17 @@ pub fn spawn_app_inhibit_task(
     idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
     cfg: Arc<IdleConfig>,
 ) {
-    let mut inhibitor = AppInhibitor::new(cfg);
+    let mut inhibitor = AppInhibitor::new(cfg.clone());
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             ticker.tick().await;
             if inhibitor.is_any_app_running().await {
                 let mut timer = idle_timer.lock().await;
-                timer.reset();
+                timer.reset(); // borrow the Arc inner value
             }
         }
     });
 }
+
 

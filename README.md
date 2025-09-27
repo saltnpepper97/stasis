@@ -22,9 +22,11 @@
 - **🎵 Media-aware idle handling** - automatically detects media playback
 - **🚫 Application-specific inhibitors** - prevent idle when specific apps are running
 - **⏸️ Idle inhibitor respect** - honors Wayland idle inhibitor protocols
-- **⚙️ Flexible action system** - supports custom commands and timeouts for any action (lock, suspend, hibernate, shutdown, etc.)
+- **⚙️ Flexible action system** - supports named action blocks and custom commands
 - **🔍 Regex pattern matching** - powerful app filtering with regular expressions
 - **📝 Clean configuration** - uses the intuitive [RUNE](https://github.com/saltnpepper97/rune-cfg) configuration language
+- **🔧 CLI options** - verbose logging, version info, and live config reloading
+- **⚡ Live reload** - update configuration without restarting the daemon
 
 ## Compositor Support
 
@@ -78,6 +80,69 @@ Or install to your local bin directory:
 install -Dm755 target/release/stasis ~/.local/bin/stasis
 ```
 
+## Usage
+
+### Command Line Options
+
+```bash
+# Run normally
+stasis
+
+# Show version information
+stasis --version
+
+# Enable verbose logging
+stasis --verbose
+
+# Reload configuration (send to running daemon)
+stasis --reload
+# or
+stasis -r
+```
+
+### Running Manually
+```bash
+stasis
+```
+
+### Live Configuration Reload
+While Stasis is running, you can reload the configuration without restarting:
+```bash
+stasis --reload-config
+# or
+stasis -r
+```
+
+### Systemd Service (Recommended)
+
+Create `~/.config/systemd/user/stasis.service`:
+
+```ini
+[Unit]
+Description=Stasis Wayland Idle Manager
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/stasis
+# Use /usr/local/bin/stasis if installed system-wide
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Enable and start the service:
+```bash
+systemctl --user enable stasis.service
+systemctl --user start stasis.service
+```
+
+Check service status:
+```bash
+systemctl --user status stasis.service
+```
+
 ## Configuration
 
 Stasis uses a configuration file written in **[RUNE](https://github.com/saltnpepper97/rune-cfg)**, a simple but effective configuration language designed for clarity and ease of use.
@@ -111,6 +176,7 @@ app_default_timeout 300
 
 idle:
   resume_command "systemctl resume-sessions"
+  pre_suspend_command "notify-send 'System suspending in 5 seconds' && sleep 5"
   monitor_media true
   respect_idle_inhibitors true
   
@@ -118,7 +184,7 @@ idle:
     "spotify"
     "mpv"
     r".*\.exe"
-    r"steam_app_*\.*"
+    r"steam_app_\d+.*"
   ]
   
   lock_screen:
@@ -129,6 +195,27 @@ idle:
   suspend:
     timeout 1800 # 30 minutes
     command "systemctl suspend"
+  end
+  
+  dpms:
+    timeout 600 # 10 minutes
+    command "wlopm --off '*'"
+  end
+  
+  brightness:
+    timeout 120 # 2 minutes
+    command "brightnessctl set 10%"
+  end
+  
+  # Custom action blocks
+  hibernate:
+    timeout 3600 # 1 hour
+    command "systemctl hibernate"
+  end
+  
+  notify_long_idle:
+    timeout 900 # 15 minutes
+    command "notify-send 'You have been idle for 15 minutes'"
   end
 end
 ```
@@ -142,23 +229,57 @@ end
 
 #### Idle Block Configuration
 - `resume_command` - Command to run when resuming from idle
-- `monitor_media` - Automatically detect media playback to prevent idle
+- `pre_suspend_command` - Command to run before system suspend operations
+- `monitor_media` - Automatically detect media playbook to prevent idle
 - `respect_idle_inhibitors` - Honor Wayland idle inhibitor protocols  
 - `inhibit_apps` - Array of application names/patterns to prevent idle
 
-#### Built-in Actions
+#### Named Action Blocks
 
-##### Lock Screen
+**⚠️ Important Configuration Notes for v0.1.2:**
+
+1. **Variable naming flexibility:** You can use either dashes (`-`) or underscores (`_`) in variable names, but **be consistent within each individual variable name**:
+   ```rune
+   # ✅ Good - consistent within each variable name
+   app_default_timeout 300
+   monitor-media true
+   lock_screen:
+     # ...
+   
+   # ✅ Also good - using underscores consistently per variable
+   app_default_timeout 300
+   monitor_media true
+   lock_screen:
+     # ...
+   
+   # ❌ Bad - mixing within the same variable name
+   app_default-timeout 300  # Don't mix _ and - in same variable!
+   monitor_media-setting true  # Don't mix _ and - in same variable!
+   ```
+
+2. **Named action blocks are fixed:** In version 0.1.2, the named action blocks listed below are **set in stone**. You must use these exact names for built-in functionality - they cannot be customized or renamed.
+
+##### Built-in Action Blocks (Fixed Names in v0.1.2)
+
+**Lock Screen** (`lock_screen` or `lock-screen`)
 - `timeout` - Time in seconds before locking (can reference variables)
 - `command` - Command to execute for screen locking
 
-##### Suspend
+**Suspend** (`suspend`)
 - `timeout` - Time in seconds before suspending
 - `command` - Command to execute for system suspend
 
-#### Custom Actions
+**DPMS** (`dpms`)
+- `timeout` - Time in seconds before turning off displays
+- `command` - Command to execute for display power management
 
-You can define any custom action block with its own timeout and command:
+**Brightness** (`brightness`)
+- `timeout` - Time in seconds before dimming screen
+- `command` - Command to execute for brightness control
+
+##### Custom Action Blocks
+
+You can define any number of custom action blocks with unique names (avoid using the reserved names above):
 
 ```rune
 idle:
@@ -172,62 +293,58 @@ idle:
     command "systemctl poweroff"
   end
   
-  notify_long_idle:
+  notify_user:
     timeout 600   # 10 minutes
     command "notify-send 'Long idle detected'"
+  end
+  
+  backup_data:
+    timeout 1200  # 20 minutes
+    command "/home/user/scripts/backup.sh"
   end
 end
 ```
 
 ### App Inhibitor Patterns
 
-The `inhibit_apps` array supports both literal app names and regex patterns:
+The `inhibit_apps` array supports both literal app names and regex patterns using raw string syntax:
 
 ```rune
 inhibit_apps [
   "spotify"              # Exact match
   "mpv"                  # Exact match
-  r".*\.exe"            # Regex: any .exe file
-  r"steam_app_*\.*"     # Regex: Steam applications
-  r"firefox.*"          # Regex: Firefox and variants
+  r".*\.exe"             # Regex: any .exe file
+  r"steam_app_\d+.*"     # Regex: Steam applications with digits
+  r"firefox.*"           # Regex: Firefox and variants
+  r"^chrome.*"           # Regex: Chrome browsers (starts with 'chrome')
+  r".*[Vv]ideo.*"        # Regex: apps containing 'Video' or 'video'
 ]
 ```
 
-## Usage
+**Regex Pattern Guidelines:**
+- Use raw string syntax: `r"pattern"` for all regex patterns
+- Escape special characters properly: `\.` for literal dots, `\d+` for digits
+- Use `.*` for wildcard matching
+- Use `^` for start-of-string and `$` for end-of-string anchors
+- Test your patterns with verbose logging to ensure they match correctly
 
-### Running Manually
-```bash
-stasis
-```
+### Pre-Suspend Commands
 
-### Systemd Service (Recommended)
+The `pre_suspend_command` option allows you to run a command before any suspend operation occurs. This is useful for:
+- Saving work or state before suspend
+- Showing notifications to the user
+- Gracefully closing applications
+- Adding delays for user interaction
 
-Create `~/.config/systemd/user/stasis.service`:
-
-```ini
-[Unit]
-Description=Stasis Wayland Idle Manager
-After=graphical-session.target
-
-[Service]
-ExecStart=%h/.local/bin/stasis
-# Use /usr/local/bin/stasis if installed system-wide
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-Enable and start the service:
-```bash
-systemctl --user enable stasis.service
-systemctl --user start stasis.service
-```
-
-Check service status:
-```bash
-systemctl --user status stasis.service
+```rune
+idle:
+  pre_suspend_command "notify-send 'Suspending in 10 seconds...' && sleep 10"
+  
+  suspend:
+    timeout 1800
+    command "systemctl suspend"
+  end
+end
 ```
 
 ## About RUNE
@@ -238,9 +355,10 @@ Stasis uses **[RUNE](https://github.com/saltnpepper97/rune-cfg)**, a configurati
 - **Variable support** - Define and reference variables
 - **Nested configuration blocks** - Organize complex configurations
 - **Array and string literals** - Flexible data types
-- **Regex pattern support** - Use `r"pattern"` syntax for powerful matching
+- **Raw string support** - Use `r"pattern"` syntax for regex patterns
 - **Comments** - Document your config with `#`
 - **Type safety and validation** - Catch errors early
+- **Metadata** - Use `@` symbol to denote metadata
 
 ## Troubleshooting
 
@@ -249,14 +367,26 @@ Stasis uses **[RUNE](https://github.com/saltnpepper97/rune-cfg)**, a configurati
 **Stasis not detecting apps:**
 - Ensure your compositor is supported (see [Compositor Support](#compositor-support))
 - Check that the app names in `inhibit_apps` match the actual application names
+- Use `stasis --verbose` to see detailed logging of app detection
+
+**Regex patterns not matching:**
+- Ensure you're using raw string syntax: `r"pattern"`
+- Test patterns with verbose logging to see what apps are detected
+- Remember that River uses process-based detection which may have different app names
 
 **Service not starting:**
 - Verify the `ExecStart` path in your systemd service file
 - Check service logs: `journalctl --user -u stasis.service`
 
+**Configuration not reloading:**
+- Use `stasis reload-config` to send reload signal to running daemon
+- Check configuration syntax if reload fails
+
 **Configuration errors:**
-- Validate your RUNE syntax
+- Validate your RUNE syntax - ensure consistent use of dashes or underscores
+- Verify you're using the correct built-in action block names (they are fixed in v0.1.2)
 - Check the manual: `man 5 stasis`
+- Use verbose logging to identify configuration issues
 
 ## Contributing
 
@@ -284,6 +414,4 @@ Check out the existing implementations in the source code for reference.
 
 ---
 
-<p align="center">
-  <i>Stasis - keeping your Wayland session in perfect balance between active and idle.</i>
-</p>
+*Stasis - keeping your Wayland session in perfect balance between active and idle.*

@@ -1,0 +1,37 @@
+use std::sync::Arc;
+use tokio::net::UnixListener;
+use tokio::io::AsyncReadExt;
+use crate::{config, idle_timer::IdleTimer, utils::{log_message, log_error_message}};
+
+/// Spawn the control socket task using a pre-bound listener
+pub fn spawn_control_socket_with_listener(
+    idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
+    cfg_path: String,
+    listener: UnixListener,
+) {
+    tokio::spawn(async move {
+        let listener = listener; // Already bound in main.rs
+
+        loop {
+            if let Ok((mut stream, _addr)) = listener.accept().await {
+                let mut buf = vec![0u8; 32];
+                if let Ok(n) = stream.read(&mut buf).await {
+                    let cmd = &buf[..n];
+                    if cmd == b"reload" {
+                        match config::load_config(&cfg_path) {
+                            Ok(new_cfg) => {
+                                let mut timer = idle_timer.lock().await;
+                                timer.update_from_config(&new_cfg);
+                                log_message("Config reloaded successfully");
+                            }
+                            Err(_) => {
+                                log_error_message("Failed to reload config");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+

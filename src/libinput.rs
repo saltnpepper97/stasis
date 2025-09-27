@@ -53,7 +53,7 @@ pub fn spawn_libinput_task(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) {
                         let idle_timer_clone = Arc::clone(&idle_timer);
                         rt.block_on(async move {
                             let mut timer = idle_timer_clone.lock().await;
-                            timer.reset();
+                            timer.reset(); // <-- no cfg needed
                         });
                     }
                     _ => {}
@@ -77,3 +77,4 @@ fn silence_stderr() {
         libc::dup2(dev_null.as_raw_fd(), libc::STDERR_FILENO);
     }
 }
+

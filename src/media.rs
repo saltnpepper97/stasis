@@ -1,11 +1,10 @@
+use std::{sync::Arc, time::Duration};
 use eyre::Result;
 use mpris::{PlayerFinder, PlaybackStatus};
-use crate::idle_timer::IdleTimer;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time;
+use tokio::{task, time};
 
-use tokio::task;
+use crate::idle_timer::IdleTimer;
+use crate::utils::{log_message, log_error_message};
 
 /// Setup MPRIS monitoring using a repeating Tokio-local task
 pub fn setup(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
@@ -26,13 +25,13 @@ pub fn setup(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
                             if status == PlaybackStatus::Playing {
                                 let mut timer = idle_timer_clone.lock().await;
                                 timer.reset();
-                                // println!("[idleman] Media playing, timer reset");
+                                log_message("Media playback detected, timer reset");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[idleman] MPRIS: failed to list players: {:?}", e);
+                    log_error_message(&format!("MPRIS: failed to list players: {:?}", e));
                 }
             }
         }
@@ -40,3 +39,4 @@ pub fn setup(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
 
     Ok(())
 }
+
