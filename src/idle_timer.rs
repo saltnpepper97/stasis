@@ -8,6 +8,7 @@ use crate::brightness::{capture_brightness, restore_brightness, BrightnessState}
 
 
 pub struct IdleTimer {
+    is_laptop: bool,
     last_activity: Instant,
     actions: Vec<IdleAction>,         // currently active actions (AC/Battery)
     #[allow(dead_code)]
@@ -50,8 +51,15 @@ impl IdleTimer {
             .map(|(_, v)| v.clone())
             .collect::<Vec<_>>();
 
-        // Try to detect power state, with retries for boot scenarios
-        let on_ac = detect_power_state_with_retry();
+        // Try to detect power state, with retries for boot scenarios       
+        let is_laptop = crate::utils::is_laptop();
+        let on_ac = if is_laptop {
+            detect_power_state_with_retry(is_laptop)
+        } else {
+            log_message("Desktop detected, skipping AC/Battery detection");
+            false // or true, doesn't matter, just won't change
+        };
+
         
         let actions = if !ac_actions.is_empty() || !battery_actions.is_empty() {
             if on_ac {
@@ -70,9 +78,8 @@ impl IdleTimer {
 
         log_message(&format!("IdleTimer initialized: {} actions, on_ac: {}", actions.len(), on_ac));
 
-        // In IdleTimer::new(), after initialization
-
-        Self {
+        let mut timer = Self {
+            is_laptop,
             last_activity: Instant::now(),
             actions,
             ac_actions,
@@ -86,6 +93,47 @@ impl IdleTimer {
             previous_dpms: false,
             on_ac,
             paused: false,
+        };
+
+        // Trigger all timeout=0 actions immediately during initialization
+        timer.trigger_instant_actions();
+        
+        timer
+    }
+
+    /// Trigger all actions with timeout_seconds == 0 exactly once
+    fn trigger_instant_actions(&mut self) {
+        // Collect instant actions first to avoid borrow checker issues
+        let mut instant_actions = Vec::new();
+        for (i, action) in self.actions.iter().enumerate() {
+            if action.timeout_seconds == 0 && !self.is_idle_flags[i] {
+                instant_actions.push((i, action.clone()));
+            }
+        }
+
+        // Now process the instant actions
+        for (i, action) in instant_actions {
+            self.is_idle_flags[i] = true;
+            self.active_kinds.insert(action.kind.to_string());
+            
+            log_message(&format!("Instant action triggered: {}", action.command));
+            
+            // Handle brightness capture for instant brightness actions
+            if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
+                if let Some(state) = capture_brightness() {
+                    self.previous_brightness = Some(state.clone());
+                    log_message(&format!("Captured current brightness: {} (device: {})", state.value, state.device));
+                } else {
+                    log_message("Warning: Could not capture current brightness");
+                }
+            }
+            
+            // Handle DPMS state for instant DPMS actions
+            if action.kind == IdleActionKind::Dpms && !self.previous_dpms {
+                self.previous_dpms = true;
+            }
+            
+            crate::actions::on_idle_timeout(&action, Some(self));
         }
     }
     
@@ -118,9 +166,11 @@ impl IdleTimer {
         self.active_kinds.clear();
         self.previous_brightness = None;
         self.previous_dpms = false;
+
+        // Don't re-trigger instant actions on reset - they should only run once per power state/config
     }
 
-    /// Check which idle actions should trigger 
+    /// Check which idle actions should trigger (excluding timeout=0 actions)
     pub fn check_idle(&mut self) {
         if self.paused {
             return; // do nothing while paused
@@ -131,6 +181,11 @@ impl IdleTimer {
         for i in 0..self.actions.len() {
             let action = &self.actions[i];
             let key = action.kind.to_string();
+
+            // Skip timeout=0 actions - they should only be triggered once during init or power change
+            if action.timeout_seconds == 0 {
+                continue;
+            }
 
             if elapsed >= Duration::from_secs(action.timeout_seconds)
                 && !self.is_idle_flags[i]
@@ -169,14 +224,19 @@ impl IdleTimer {
 
     /// Switch actions when power source changes
     pub fn update_power_source(&mut self, on_ac: bool) {
+        if !self.is_laptop {
+            return; // skip desktops entirely
+        }
+
         if self.on_ac != on_ac {
             log_message(&format!("Power source changed: {}", if on_ac { "AC" } else { "Battery" }));
             self.on_ac = on_ac;
 
-            // Restore any saved brightness state
+            // Note: We're switching to a completely new action set, so we don't need to preserve flags
+
+            // Restore any saved brightness state before switching
             if let Some(state) = self.previous_brightness.take() {
                 restore_brightness(&state);
-                self.previous_brightness = Some(state);
             }
 
             // Switch the current idle actions
@@ -185,19 +245,17 @@ impl IdleTimer {
             } else {
                 self.battery_actions.clone()
             };
+
+            // Reset flags for new action set
             self.is_idle_flags = vec![false; self.actions.len()];
 
-            for (i, action) in self.actions.iter().enumerate() {
-                if action.timeout_seconds == 0 {
-                    log_message(&format!("Instant trigger on power change: {}", action.command));
-                    crate::actions::run_command_silent(&action.command).ok();
-                    // Mark as triggered so check_idle won't re-run it
-                    if i < self.is_idle_flags.len() {
-                        self.is_idle_flags[i] = true;
-                        self.active_kinds.insert(action.kind.to_string());
-                    }
-                }
-            }
+            // Clear active kinds to allow new actions
+            self.active_kinds.clear();
+            self.previous_brightness = None;
+            self.previous_dpms = false;
+
+            // Trigger instant actions (timeout=0) for the new power state exactly once
+            self.trigger_instant_actions();
         }
     }
 
@@ -231,6 +289,8 @@ impl IdleTimer {
                 self.last_activity = Instant::now();
                 self.is_idle_flags.iter_mut().for_each(|f| *f = false);
                 self.active_kinds.clear();
+                // Only re-trigger instant actions if explicitly rewinding timers
+                self.trigger_instant_actions(); 
                 log_message("Idle timer rewound to first action after manual pre-suspend");
             } else {
                 // Preserve the exact timer state - don't change anything
@@ -276,7 +336,36 @@ impl IdleTimer {
     pub fn resume(&mut self) {
         if self.paused {
             self.paused = false;
-            self.reset(); // treat resume like user activity
+            // Reset timer state but don't re-trigger instant actions
+            let was_idle = self.is_idle_flags.iter().any(|&b| b);
+            self.last_activity = Instant::now();
+            for flag in self.is_idle_flags.iter_mut() {
+                *flag = false;
+            }
+
+            if was_idle {
+                // Restore brightness if saved
+                if let Some(state) = &self.previous_brightness {
+                    log_message(&format!("Restoring brightness to {} (device: {})", state.value, state.device));
+                    restore_brightness(state);
+                }
+
+                // Restore DPMS if it was triggered
+                if self.previous_dpms {
+                    log_message("Restoring DPMS via compositor");
+                }
+
+                // Global resume command (user-defined)
+                if let Some(cmd) = &self.resume_command {
+                    log_message(&format!("Running resume command: {}", cmd));
+                    crate::actions::run_command_silent(cmd).ok();
+                }
+            }
+
+            self.active_kinds.clear();
+            self.previous_brightness = None;
+            self.previous_dpms = false;
+            
             log_message("Idle timers resumed");
         }
     }
@@ -291,6 +380,7 @@ impl IdleTimer {
 
     pub fn shortest_timeout(&self) -> Duration {
         self.actions.iter()
+            .filter(|a| a.timeout_seconds > 0) // Exclude timeout=0 actions from shortest timeout calculation
             .map(|a| Duration::from_secs(a.timeout_seconds))
             .min()
             .unwrap_or_else(|| Duration::from_secs(60))
@@ -333,6 +423,11 @@ impl IdleTimer {
         self.pre_suspend_command = cfg.pre_suspend_command.clone();
         self.last_activity = Instant::now();
         self.active_kinds.clear();
+        self.previous_brightness = None;
+        self.previous_dpms = false;
+
+        // Trigger instant actions after config reload
+        self.trigger_instant_actions();
 
         log_message("Idle timers reloaded from config");
     }
@@ -346,6 +441,8 @@ impl IdleTimer {
         for (i, action) in self.actions.iter().enumerate() {
             let status = if self.is_idle_flags[i] {
                 "TRIGGERED"
+            } else if action.timeout_seconds == 0 {
+                "INSTANT"
             } else if elapsed >= Duration::from_secs(action.timeout_seconds) {
                 "READY"
             } else {
@@ -357,25 +454,23 @@ impl IdleTimer {
 }
 
 /// Detect power state with retries for boot scenarios
-fn detect_power_state_with_retry() -> bool {
-    // Try multiple times in case power supply files aren't ready yet
+fn detect_power_state_with_retry(is_laptop: bool) -> bool {
+    if !crate::utils::is_laptop() {
+        log_message("Desktop detected, assuming AC power");
+        return true;
+    }
+
     for attempt in 1..=6 {
-        let on_ac = is_on_ac_power();
+        let on_ac = is_on_ac_power(is_laptop);
         log_message(&format!("Power detection attempt {}: {}", attempt, if on_ac { "AC" } else { "Battery" }));
-        
-        // If we found an AC adapter, trust it
         if on_ac { return true; }
-        
-        // If this isn't the last attempt, wait a bit
-        if attempt < 6 {
-            std::thread::sleep(Duration::from_millis(500));
-        }
+        if attempt < 6 { std::thread::sleep(Duration::from_millis(500)); }
     }
     
-    // Default to battery if we can't detect AC
     log_message("Could not detect AC power after retries, defaulting to battery");
     false
 }
+
 
 /// Synchronously run pre-suspend command with 5s timeout
 fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -405,7 +500,16 @@ fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
-        let mut last_power_state = None;
+        
+        // Initialize last_power_state with current state to prevent false changes
+        let mut last_power_state = {
+            let timer = idle_timer.lock().await;
+            if timer.is_laptop {
+                Some(timer.on_ac)  // Use the state that was already determined during initialization
+            } else {
+                Some(true)  // Desktop always on AC
+            }
+        };
 
         // Give the system a moment to settle on startup
         tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -415,18 +519,22 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
             let mut timer = idle_timer.lock().await;
 
             // --- check AC/Battery ---
-            let on_ac = is_on_ac_power();
-            if last_power_state != Some(on_ac) {
-                log_message(&format!("Power state change detected: {} -> {}", 
-                    match last_power_state {
-                        Some(true) => "AC",
-                        Some(false) => "Battery", 
-                        None => "Unknown"
-                    },
-                    if on_ac { "AC" } else { "Battery" }
-                ));
-                timer.update_power_source(on_ac);
-                last_power_state = Some(on_ac);
+            if timer.is_laptop {
+                let on_ac = is_on_ac_power(timer.is_laptop);
+
+                // Only update if there's an actual change
+                if last_power_state != Some(on_ac) {
+                    log_message(&format!("Power state change detected: {} -> {}", 
+                        match last_power_state {
+                            Some(true) => "AC",
+                            Some(false) => "Battery", 
+                            None => "Unknown"
+                        },
+                        if on_ac { "AC" } else { "Battery" }
+                    ));
+                    timer.update_power_source(on_ac);
+                    last_power_state = Some(on_ac);
+                }
             }
 
             // --- check idle ---
@@ -436,7 +544,12 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
 }
 
 /// Check if system is on AC power
-pub fn is_on_ac_power() -> bool {
+pub fn is_on_ac_power(is_laptop: bool) -> bool {
+    if !is_laptop {
+        // Desktop: assume always on AC, no log spam
+        return true;
+    }
+
     // Method 1: Check AC adapters
     if let Ok(entries) = fs::read_dir("/sys/class/power_supply/") {
         let mut ac_found = false;
@@ -511,11 +624,9 @@ pub fn is_on_ac_power() -> bool {
                         return true;
                     }
                 }
-            }
+                }
         }
     }
     
-    log_message("No AC power detected - running on battery");
     false
 }
-
