@@ -71,7 +71,7 @@ paru -S stasis
 ```bash
 git clone https://github.com/saltnpepper97/stasis
 cd stasis
-cargo build --release --locked
+cargo build --release --locked --features "wlroots_virtual_keyboard"
 sudo install -Dm755 target/release/stasis /usr/local/bin/stasis
 ```
 
