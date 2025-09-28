@@ -72,7 +72,6 @@ async fn main() -> Result<()> {
         match UnixStream::connect(socket_path).await {
             Ok(mut stream) => {
                 let _ = stream.write_all(msg.as_bytes()).await;
-                log_message(&format!("Sent '{}' request to running instance", msg));
             }
             Err(_) => {
                 log_error_message("No running instance found");
