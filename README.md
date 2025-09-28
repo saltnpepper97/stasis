@@ -88,16 +88,36 @@ install -Dm755 target/release/stasis ~/.local/bin/stasis
 # Run normally
 stasis
 
+# Specify custom config path
+stasis -c "/path/to/file"
+
 # Show version information
 stasis --version
 
 # Enable verbose logging
 stasis --verbose
+```
 
-# Reload configuration (send to running daemon)
-stasis --reload
-# or
-stasis -r
+### Subcommands
+
+```bash
+# Reload stasis config
+stasis reload-config
+
+# Stop currently running instance
+stasis stop
+
+# Pause timers
+stasis pause
+
+# Resume timers
+stasis resume
+
+# Trigger all idle timers
+stasis trigger-idle
+
+# Trigger pre-suspend-command
+statis trigger-pre_suspend
 ```
 
 ### Running Manually
@@ -108,9 +128,7 @@ stasis
 ### Live Configuration Reload
 While Stasis is running, you can reload the configuration without restarting:
 ```bash
-stasis --reload-config
-# or
-stasis -r
+stasis reload-config
 ```
 
 ### Systemd Service (Recommended)
@@ -170,7 +188,8 @@ cp /usr/share/doc/stasis/stasis.rune ~/.config/stasis/stasis.rune
 Create your configuration at `~/.config/stasis/stasis.rune`:
 
 ```rune
-@description "Stasis configuration example"
+@author "Dustin Pilgrim"
+@description "Stasis configuration file"
 
 app_default_timeout 300
 
@@ -180,7 +199,6 @@ idle:
   monitor_media true
   respect_idle_inhibitors true
 
-  # App inhibition
   inhibit_apps [
     "vlc"
     "Spotify"
@@ -189,45 +207,80 @@ idle:
     r"steam_app_.*"
     r"firefox.*"
   ]
-  
-  # Named idle actions
-  # ------------------
-  lock_screen:                 # IdleActionKind::LockScreen
-    timeout = app_default_timeout
-    command "swaylock"
+
+  # Desktop-only idle actions
+  lock_screen:
+    timeout = 300
+    command "brightnessctl set 10% && sleep 0.2 && swaylock"
   end
-  
-  suspend:                      # IdleActionKind::Suspend
+
+  suspend:
     timeout 1800
     command "systemctl suspend"
   end
-  
-  dpms:                          # IdleActionKind::Dpms
+
+  dpms:
     timeout 330
     command "niri msg action power-off-monitors"
   end
 
-  # Laptop brightness example (optional)
-  #brightness:
-  #  timeout 320
-  #  command "brightnessctl set 10%-"
-  #end
+  # Laptop-only AC actions
+  on_ac:
 
-  # Immediate AC/Battery commands
-  on_ac "brightnessctl set 100%"
-  on_battery "brightnessctl set 30%"
-  
-  # Custom idle actions
-  # -------------------
-  #hibernate:                     # IdleActionKind::Custom
-  #  timeout 3600
-  #  command "systemctl hibernate"
-  #end
-  
-  #shutdown:                      # IdleActionKind::Custom
-  #  timeout 7200
-  #  command "systemctl poweroff"
-  #end
+    lock_screen:
+      command "brightnessctl set 20% && sleep 0.2 && swaylock"
+      timeout 300
+    end
+
+    dpms:
+      command "niri msg action power-off-monitors"
+      timeout 300
+    end
+
+    brightness:
+      command "brightnessctl set 100%"
+      timeout 0
+    end
+
+    suspend:
+      command "systemctl suspend"
+      timeout 1800
+    end
+
+    custom:
+      command "notify-send 'AC mode custom action'"
+      timeout 300
+    end
+  end
+
+  # Laptop-only battery actions
+  on_battery:
+
+    lock_screen:
+      command "brightnessctl set 10% && sleep 0.2 && swaylock"
+      timeout 300
+    end
+
+    dpms:
+      command "niri msg action power-off-monitors"
+      timeout 300
+    end
+
+    brightness:
+      command "brightnessctl set 30%"
+      timeout 0
+    end
+
+    suspend:
+      command "systemctl suspend"
+      timeout 1200
+    end
+
+    custom:
+      command "notify-send 'Battery mode custom action'"
+      timeout 300
+    end
+  end
 end
 ```
 
@@ -247,7 +300,7 @@ end
 
 #### Named Action Blocks
 
-**⚠️ Important Configuration Notes for v0.1.2:**
+**⚠️ Important Configuration Notes as of v0.1.2:**
 
 1. **Variable naming flexibility:** You can use either dashes (`-`) or underscores (`_`) in variable names, but **be consistent within each individual variable name**:
    ```rune
@@ -268,9 +321,9 @@ end
    monitor_media-setting true  # Don't mix _ and - in same variable!
    ```
 
-2. **Named action blocks are fixed:** In version 0.1.2, the named action blocks listed below are **set in stone**. You must use these exact names for built-in functionality - they cannot be customized or renamed.
+2. **Named action blocks are fixed:** As of version 0.1.2, the named action blocks listed below are **set in stone**. You must use these exact names for built-in functionality - they cannot be customized or renamed.
 
-##### Built-in Action Blocks (Fixed Names in v0.1.2)
+##### Built-in Action Blocks (Fixed Names as of v0.1.2)
 
 **Lock Screen** (`lock_screen` or `lock-screen`)
 - `timeout` - Time in seconds before locking (can reference variables)
@@ -395,10 +448,10 @@ Stasis uses **[RUNE](https://github.com/saltnpepper97/rune-cfg)**, a configurati
 
 **Configuration errors:**
 - Validate your RUNE syntax - ensure consistent use of dashes or underscores
-- Verify you're using the correct built-in action block names (they are fixed in v0.1.2)
+- Verify you're using the correct built-in action block names (they are fixed as of v0.1.2)
 - Check the manual: `man 5 stasis`
 - Use verbose logging to identify configuration issues
-
+ 
 ## Contributing
 
 We welcome contributions! Here's how you can help:
@@ -425,4 +478,4 @@ Check out the existing implementations in the source code for reference.
 
 ---
 
-*Stasis - keeping your Wayland session in perfect balance between active and idle.*
+*keeping your Wayland session in perfect balance between active and idle.*

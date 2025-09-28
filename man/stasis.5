@@ -1,44 +1,61 @@
-.TH STASIS 5 "2025-09-25" "Stasis 0.1" "User Manuals"
+.TH STASIS 5 "2025-09-27" "Stasis 0.1.3" "User Manuals"
+
 .SH NAME
-stasis \- simple idle manager configuration for Wayland compositors
+stasis \- modern idle manager for Wayland compositors
 
 .SH SYNOPSIS
-Stasis is configured via a Rune file (default: ~/.config/stasis/stasis.rune).
-To run it automatically, add it to your compositor's autostart section (e.g., Niri, Hyprland, River).
+Stasis reads its configuration from a RUNE file (default: ~/.config/stasis/stasis.rune; copy the system default from /usr/local/share/doc/stasis/stasis.rune).
+To start automatically, add exec stasis to your compositor's autostart (Niri, Hyprland, River).
 
 .SH DESCRIPTION
-Stasis monitors user idle time and can run commands on idle, suspend, or lock events.
-It supports media monitoring and application-specific idle inhibitions.
-Tested with the Niri compositor; idle app inhibition also works on Hyprland and River.
+Stasis monitors user idle time and triggers commands on idle, resume, suspend, or lock events.
+It supports media monitoring, application-specific idle inhibition, and automatic restoration of display brightness and DPMS state.
+
+Power-source-specific actions are supported:
+
+.TP
+on_ac / on_battery
+Blocks containing actions that run when the power source changes.  
+Each action within the block respects its configured timeout:
+- `timeout = 0` executes immediately
+- `timeout > 0` executes after the specified number of seconds
+These blocks are useful for adjusting brightness, DPMS, or other system behavior depending on AC or battery power.
+
+Subcommands allow control of the running daemon:
+.IP
+reload-config, pause, resume, trigger-idle, trigger-pre-suspend, stop
 
 .SH CONFIGURATION
-The configuration file is written in Rune. Key sections:
+The configuration file is written in RUNE. Key sections:
 
 .TP
 idle
-Commands and behavior for idle state. Options:
+Commands and behavior for idle state.
 
 .TP
 resume_command
 Command to run when activity resumes.
 
 .TP
+pre_suspend_command
+Command to run before system suspend operations.
+
+.TP
 monitor_media
-true/false to pause idle on media playback.
+true/false to pause idle detection during media playback.
 
 .TP
 respect_idle_inhibitors
-true/false
+true/false to honor Wayland idle inhibitor protocols.
 
 .TP
 inhibit_apps
 List of apps to ignore for idle. Supports literal names and Rust-style
-regex patterns (handled by Stasis; Rune itself has no regex capabilities).
-Currently, this feature only works on Niri, Hyprland, and River.
+regex patterns (handled by Stasis). Works on Niri, Hyprland, and River.
 
 .TP
 lock_screen
-Section defining automatic screen locking:
+Section defining automatic screen locking.
 
 .TP
 timeout
@@ -46,11 +63,11 @@ Seconds before running the lock command.
 
 .TP
 command
-Command to run (e.g., hyprlock).
+Command to run (e.g., swaylock or hyprlock).
 
 .TP
 suspend
-Section defining automatic suspend:
+Section defining automatic suspend.
 
 .TP
 timeout
@@ -61,35 +78,101 @@ command
 Command to run (e.g., systemctl suspend).
 
 .TP
-custom_command
-Optional section to define additional commands.
+dpms
+Optional section to turn off displays after a timeout.
+
+.TP
+timeout
+Seconds before DPMS triggers.
+
+.TP
+command
+Command to run (e.g., compositor-specific power-off monitors).
+
+.TP
+brightness
+Optional section to adjust screen brightness after a timeout.
+
+.TP
+timeout
+Seconds before brightness adjustment triggers.
+
+.TP
+command
+Command to run (e.g., brightnessctl set 10%-).
+
+.TP
+on_ac / on_battery
+Blocks containing idle actions that run when the power source changes.
+Each action respects its configured timeout.
+
+.TP
+custom
+Optional section to define additional commands with timeout and command.
 
 .SH FILES
 ~/.config/stasis/stasis.rune
 : Default configuration file.
 
-.SH EXAMPLES
+.SH STARTING
+.nf
 Autostart Stasis in Niri (or other compositors):
 
-.nf
 # Add this line to your compositor's autostart config
 exec stasis
-.fi
 
-Lock the screen automatically after 5 minutes of idle using Hyprlock:
+.SH EXAMPLES
 
-.nf
+
+# Lock the screen automatically after 5 minutes of idle
 lock_screen:
     timeout = 300
     command "hyprlock"
-.fi
+end
 
-Suspend automatically after 30 minutes of idle:
-
-.nf
+# Suspend automatically after 30 minutes of idle
 suspend:
     timeout = 1800
     command "systemctl suspend"
+end
+
+# Set brightness or other actions on AC
+on_ac:
+    brightness:
+        timeout = 0
+        command "brightnessctl set 100%"
+    end
+
+    dpms:
+        timeout = 10
+        command "niri msg action power-off-monitors"
+    end
+end
+
+# Set brightness or other actions on battery
+on_battery:
+    brightness:
+        timeout = 0
+        command "brightnessctl set 30%"
+    end
+
+    dpms:
+        timeout = 10
+        command "niri msg action power-off-monitors"
+    end
+end
+.fi
+
+.SH CLI SUBCOMMANDS
+Control a running Stasis instance using:
+
+.nf
+stasis reload-config
+stasis pause
+stasis resume
+stasis trigger-idle
+stasis trigger-pre-suspend
+stasis stop
 .fi
 
 .SH SEE ALSO
