@@ -81,11 +81,18 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let just_help_or_version = std::env::args().any(|a| {
+        matches!(a.as_str(), "-V" | "--version" | "-h" | "--help" | "help")
+    });
+
     // --- SINGLE INSTANCE CHECK ---
     let socket_path = "/tmp/stasis.sock";
 
     // Try connecting first
     if let Ok(mut _stream) = tokio::net::UnixStream::connect(socket_path).await {
+        if !just_help_or_version && args.command.is_none() {
+            println!("Another instance of Stasis is already running.");
+        }
         log_error_message("Another instance is already running.");
         return Ok(());
     }

@@ -34,10 +34,12 @@ pub fn spawn_control_socket_with_listener(
                         "pause" => {
                             let mut timer = idle_timer.lock().await;
                             timer.pause();
+                            log_message("Idle timers paused");
                         }
                         "resume" => {
                             let mut timer = idle_timer.lock().await;
                             timer.resume();
+                            log_message("Idle timers resumed");
                         }
                         "trigger_idle" => {
                             let mut timer = idle_timer.lock().await;

@@ -13,3 +13,4 @@ pub fn is_laptop() -> bool {
         false // Could not read file, assume not a laptop
     }
 }
+

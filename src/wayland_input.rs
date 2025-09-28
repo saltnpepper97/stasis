@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::time::sleep;
 use std::time::Duration;
 
-use crate::log::log_to_cache;
+use crate::log::log_message;
 
 use wayland_client::{
     protocol::{wl_registry, wl_seat::WlSeat},
@@ -64,16 +64,16 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandIdleData {
                 "ext_idle_notifier_v1" => {
                     state.idle_notifier =
                         Some(registry.bind::<ExtIdleNotifierV1, _, _>(name, 1, qh, ()));
-                    log_to_cache("[Stasis] Binding ext_idle_notifier_v1");
+                    log_message("[Stasis] Binding ext_idle_notifier_v1");
                 }
                 "wl_seat" => {
                     state.seat = Some(registry.bind::<WlSeat, _, _>(name, 1, qh, ()));
-                    log_to_cache("[Stasis] Binding wl_seat");
+                    log_message("[Stasis] Binding wl_seat");
                 }
                 "zwp_idle_inhibit_manager_v1" => {
                     state.inhibit_manager =
                         Some(registry.bind::<ZwpIdleInhibitManagerV1, _, _>(name, 1, qh, ()));
-                    log_to_cache("[Stasis] Binding zwp_idle_inhibit_manager_v1");
+                    log_message("[Stasis] Binding zwp_idle_inhibit_manager_v1");
                 }
                 _ => {}
             }
@@ -108,7 +108,7 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandIdleData {
 
         tokio::spawn(async move {
             if inhibited {
-                log_to_cache("[Stasis] Idle inhibited by an app; skipping idle trigger");
+                log_message("[Stasis] Idle inhibited by an app; skipping idle trigger");
                 return;
             }
 
@@ -120,13 +120,13 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandIdleData {
 
             match event {
                 IdleEvent::Idled => {
-                    log_to_cache("[Stasis] Compositor detected idle state");
+                    log_message("[Stasis] Compositor detected idle state");
                     let mut timer = idle_timer.lock().await;
                     timer.mark_all_idle();
                     timer.trigger_idle();
                 }
                 IdleEvent::Resumed => {
-                    log_to_cache("[Stasis] Compositor detected activity");
+                    log_message("[Stasis] Compositor detected activity");
                     timer.reset();
                 }
                 _ => {}
@@ -146,7 +146,7 @@ impl Dispatch<ZwpIdleInhibitorV1, ()> for WaylandIdleData {
         _: &QueueHandle<Self>,
     ) {
         state.active_inhibitors += 1;
-        log_to_cache(&format!("[Stasis] Inhibitor created, count={}", state.active_inhibitors));
+        log_message(&format!("[Stasis] Inhibitor created, count={}", state.active_inhibitors));
     }
 }
 
@@ -162,7 +162,7 @@ impl Dispatch<ZwpIdleInhibitManagerV1, ()> for WaylandIdleData {
     ) {
         if state.active_inhibitors > 0 {
             state.active_inhibitors -= 1;
-            log_to_cache(&format!("[Stasis] Inhibitor removed, count={}", state.active_inhibitors));
+            log_message(&format!("[Stasis] Inhibitor removed, count={}", state.active_inhibitors));
         }
     }
 }
@@ -184,7 +184,7 @@ pub async fn setup(
     idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
     respect_inhibitors: bool,
 ) -> Result<()> {
-    log_to_cache(
+    log_message(
         &format!("[Stasis] Setting up Wayland idle detection (respect_inhibitors={})",
         respect_inhibitors)
     );
@@ -211,7 +211,7 @@ pub async fn setup(
 
         let mut timer = idle_timer.lock().await;
         timer.set_compositor_managed(true);
-        log_to_cache("[Stasis] Wayland idle detection active");
+        log_message("[Stasis] Wayland idle detection active");
     }
 
     // Spawn async Wayland event loop
@@ -219,7 +219,7 @@ pub async fn setup(
         loop {
             match event_queue.dispatch_pending(&mut app_data) {
                 Ok(_) => {}
-                Err(e) => log_to_cache(&format!("[Error] Wayland event error: {}", e)),
+                Err(e) => log_message(&format!("[Error] Wayland event error: {}", e)),
             }
             sleep(Duration::from_millis(50)).await;
         }

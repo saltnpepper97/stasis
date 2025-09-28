@@ -41,12 +41,18 @@ pub fn setup(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
             if any_playing {
                 if !media_playing {
                     // Only log when playback starts
-                    log_message("Media playback detected, timer reset");
+                    log_message("Media playback detected, timers paused");
                     let mut timer = idle_timer_clone.lock().await;
-                    timer.reset();
+                    timer.pause();
                 }
                 media_playing = true;
             } else {
+                if media_playing {
+                    // Playback just stopped
+                    log_message("Media playback stopped, timers resumed");
+                    let mut timer = idle_timer_clone.lock().await;
+                    timer.resume();
+                }
                 media_playing = false;
             }
         }

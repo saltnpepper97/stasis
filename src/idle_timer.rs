@@ -6,7 +6,6 @@ use crate::config::{IdleAction, IdleActionKind, IdleConfig};
 use crate::log::log_message;
 use crate::brightness::{capture_brightness, restore_brightness, BrightnessState};
 
-
 pub struct IdleTimer {
     is_laptop: bool,
     last_activity: Instant,
@@ -21,7 +20,6 @@ pub struct IdleTimer {
     compositor_managed: bool,
     active_kinds: HashSet<String>,
     previous_brightness: Option<BrightnessState>,
-    previous_dpms: bool,               // marker: true if DPMS was triggered
     on_ac: bool,
     paused: bool,
 }
@@ -90,7 +88,6 @@ impl IdleTimer {
             compositor_managed: false,
             active_kinds: HashSet::new(),
             previous_brightness: None,
-            previous_dpms: false,
             on_ac,
             paused: false,
         };
@@ -128,10 +125,7 @@ impl IdleTimer {
                 }
             }
             
-            // Handle DPMS state for instant DPMS actions
-            if action.kind == IdleActionKind::Dpms && !self.previous_dpms {
-                self.previous_dpms = true;
-            }
+     
             
             crate::actions::on_idle_timeout(&action, Some(self));
         }
@@ -151,10 +145,6 @@ impl IdleTimer {
                 restore_brightness(state);
             }
 
-            // Restore DPMS if it was triggered
-            if self.previous_dpms {
-                log_message("Restoring DPMS via compositor");
-            }
 
             // Global resume command (user-defined)
             if let Some(cmd) = &self.resume_command {
@@ -165,7 +155,6 @@ impl IdleTimer {
 
         self.active_kinds.clear();
         self.previous_brightness = None;
-        self.previous_dpms = false;
 
         // Don't re-trigger instant actions on reset - they should only run once per power state/config
     }
@@ -211,9 +200,7 @@ impl IdleTimer {
                 }
 
                 // Capture DPMS state only once
-                if action.kind == IdleActionKind::Dpms && !self.previous_dpms {
-                    self.previous_dpms = true;
-                }
+         
 
                 // Trigger the idle action
                 let action_clone = action.clone();
@@ -252,7 +239,6 @@ impl IdleTimer {
             // Clear active kinds to allow new actions
             self.active_kinds.clear();
             self.previous_brightness = None;
-            self.previous_dpms = false;
 
             // Trigger instant actions (timeout=0) for the new power state exactly once
             self.trigger_instant_actions();
@@ -329,7 +315,6 @@ impl IdleTimer {
     pub fn pause(&mut self) {
         if !self.paused {
             self.paused = true;
-            log_message("Idle timers paused");
         }
     }
 
@@ -350,11 +335,6 @@ impl IdleTimer {
                     restore_brightness(state);
                 }
 
-                // Restore DPMS if it was triggered
-                if self.previous_dpms {
-                    log_message("Restoring DPMS via compositor");
-                }
-
                 // Global resume command (user-defined)
                 if let Some(cmd) = &self.resume_command {
                     log_message(&format!("Running resume command: {}", cmd));
@@ -364,9 +344,7 @@ impl IdleTimer {
 
             self.active_kinds.clear();
             self.previous_brightness = None;
-            self.previous_dpms = false;
             
-            log_message("Idle timers resumed");
         }
     }
 
@@ -424,7 +402,6 @@ impl IdleTimer {
         self.last_activity = Instant::now();
         self.active_kinds.clear();
         self.previous_brightness = None;
-        self.previous_dpms = false;
 
         // Trigger instant actions after config reload
         self.trigger_instant_actions();
@@ -500,34 +477,26 @@ fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
-        
-        // Initialize last_power_state with current state to prevent false changes
+        let mut last_ac_check = Instant::now() - Duration::from_secs(10); // force first check
         let mut last_power_state = {
             let timer = idle_timer.lock().await;
-            if timer.is_laptop {
-                Some(timer.on_ac)  // Use the state that was already determined during initialization
-            } else {
-                Some(true)  // Desktop always on AC
-            }
+            if timer.is_laptop { Some(timer.on_ac) } else { Some(true) }
         };
 
-        // Give the system a moment to settle on startup
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await; // startup delay
 
         loop {
             ticker.tick().await;
             let mut timer = idle_timer.lock().await;
 
-            // --- check AC/Battery ---
-            if timer.is_laptop {
+            // --- check AC/Battery every 10 seconds ---
+            if timer.is_laptop && last_ac_check.elapsed() >= Duration::from_secs(10) {
                 let on_ac = is_on_ac_power(timer.is_laptop);
-
-                // Only update if there's an actual change
                 if last_power_state != Some(on_ac) {
                     log_message(&format!("Power state change detected: {} -> {}", 
                         match last_power_state {
                             Some(true) => "AC",
-                            Some(false) => "Battery", 
+                            Some(false) => "Battery",
                             None => "Unknown"
                         },
                         if on_ac { "AC" } else { "Battery" }
@@ -535,9 +504,10 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
                     timer.update_power_source(on_ac);
                     last_power_state = Some(on_ac);
                 }
+                last_ac_check = Instant::now();
             }
 
-            // --- check idle ---
+            // --- check idle every tick ---
             timer.check_idle();
         }
     });
@@ -630,3 +600,4 @@ pub fn is_on_ac_power(is_laptop: bool) -> bool {
     
     false
 }
+
