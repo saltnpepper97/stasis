@@ -16,9 +16,8 @@ mod libinput;
 mod log;
 mod media;
 mod utils;
-mod wayland;
+mod wayland_input;
 
-use crate::wayland::wayland_input;
 use log::{log_message, log_error_message, set_verbose};
 
 #[derive(Parser, Debug)]

@@ -6,10 +6,7 @@ use crate::config::{IdleAction, IdleActionKind, IdleConfig};
 use crate::log::log_message;
 use crate::brightness::{capture_brightness, restore_brightness, BrightnessState};
 
-#[cfg(feature = "wlroots_virtual_keyboard")]
-use crate::wayland::wlroots_virtual_keyboard::VirtualKeyboard;
 
-/// Tracks user idle time and triggers callbacks on timeout and resume
 pub struct IdleTimer {
     last_activity: Instant,
     actions: Vec<IdleAction>,         // currently active actions (AC/Battery)
@@ -26,8 +23,6 @@ pub struct IdleTimer {
     previous_dpms: bool,               // marker: true if DPMS was triggered
     on_ac: bool,
     paused: bool,
-    #[cfg(feature = "wlroots_virtual_keyboard")]
-    virtual_keyboard: Option<VirtualKeyboard>,
 }
 
 impl IdleTimer {
@@ -55,37 +50,45 @@ impl IdleTimer {
             .map(|(_, v)| v.clone())
             .collect::<Vec<_>>();
 
-        #[cfg(feature = "wlroots_virtual_keyboard")]
-        let mut virtual_keyboard = Some(VirtualKeyboard::new());
+        // Try to detect power state, with retries for boot scenarios
+        let on_ac = detect_power_state_with_retry();
+        
+        let actions = if !ac_actions.is_empty() || !battery_actions.is_empty() {
+            if on_ac {
+                log_message("Initializing with AC power actions");
+                ac_actions.clone()
+            } else {
+                log_message("Initializing with battery power actions");
+                battery_actions.clone()
+            }
+        } else {
+            log_message("Initializing with default actions");
+            default_actions.clone()
+        };
 
-        #[cfg(feature = "wlroots_virtual_keyboard")]
-        if let Some(vk) = &mut virtual_keyboard {
-            let conn = wayland_client::Connection::connect_to_env().unwrap();
-            let mut queue = conn.new_event_queue();
-            let qh = queue.handle();
-            vk.init(&conn, &qh);
-            queue.blocking_dispatch(vk).unwrap();
-            vk.send_key(28);
-        }
+        let is_idle_flags = vec![false; actions.len()];
+
+        log_message(&format!("IdleTimer initialized: {} actions, on_ac: {}", actions.len(), on_ac));
+
+        // In IdleTimer::new(), after initialization
 
         Self {
             last_activity: Instant::now(),
-            actions: default_actions.clone(),
+            actions,
             ac_actions,
             battery_actions,
             resume_command: cfg.resume_command.clone(),
             pre_suspend_command: cfg.pre_suspend_command.clone(),
-            is_idle_flags: vec![false; default_actions.len()],
+            is_idle_flags,
             compositor_managed: false,
             active_kinds: HashSet::new(),
             previous_brightness: None,
             previous_dpms: false,
-            on_ac: is_on_ac_power(),
+            on_ac,
             paused: false,
-            #[cfg(feature = "wlroots_virtual_keyboard")]
-            virtual_keyboard,
         }
     }
+    
     pub fn reset(&mut self) {
         let was_idle = self.is_idle_flags.iter().any(|&b| b);
         self.last_activity = Instant::now();
@@ -103,13 +106,6 @@ impl IdleTimer {
             // Restore DPMS if it was triggered
             if self.previous_dpms {
                 log_message("Restoring DPMS via compositor");
-
-                #[cfg(feature = "wlroots_virtual_keyboard")]
-                if let Some(vk) = &mut self.virtual_keyboard {
-                    // Only send key to wake the screen
-                    log_message("Sending virtual key to wake wlroots compositor");
-                    vk.send_key(28); // Enter key
-                }
             }
 
             // Global resume command (user-defined)
@@ -189,6 +185,7 @@ impl IdleTimer {
             } else {
                 self.battery_actions.clone()
             };
+            self.is_idle_flags = vec![false; self.actions.len()];
 
             for (i, action) in self.actions.iter().enumerate() {
                 if action.timeout_seconds == 0 {
@@ -306,11 +303,36 @@ impl IdleTimer {
     }
 
     pub fn update_from_config(&mut self, cfg: &IdleConfig) {
-        self.actions = cfg.actions.values().cloned().collect();
+        let default_actions: Vec<_> = cfg.actions.iter()
+            .filter(|(k, _)| !k.starts_with("ac.") && !k.starts_with("battery."))
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        self.ac_actions = cfg.actions.iter()
+            .filter(|(k, _)| k.starts_with("ac."))
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        self.battery_actions = cfg.actions.iter()
+            .filter(|(k, _)| k.starts_with("battery."))
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        self.actions = if !self.ac_actions.is_empty() || !self.battery_actions.is_empty() {
+            if self.on_ac {
+                self.ac_actions.clone()
+            } else {
+                self.battery_actions.clone()
+            }
+        } else {
+            default_actions
+        };
+
         self.is_idle_flags = vec![false; self.actions.len()];
         self.resume_command = cfg.resume_command.clone();
+        self.pre_suspend_command = cfg.pre_suspend_command.clone();
         self.last_activity = Instant::now();
-        self.active_kinds = HashSet::new();
+        self.active_kinds.clear();
 
         log_message("Idle timers reloaded from config");
     }
@@ -332,6 +354,27 @@ impl IdleTimer {
             log_message(&format!("  Action {}: {} ({}s) - {}", i, action.command, action.timeout_seconds, status));
         }
     }
+}
+
+/// Detect power state with retries for boot scenarios
+fn detect_power_state_with_retry() -> bool {
+    // Try multiple times in case power supply files aren't ready yet
+    for attempt in 1..=6 {
+        let on_ac = is_on_ac_power();
+        log_message(&format!("Power detection attempt {}: {}", attempt, if on_ac { "AC" } else { "Battery" }));
+        
+        // If we found an AC adapter, trust it
+        if on_ac { return true; }
+        
+        // If this isn't the last attempt, wait a bit
+        if attempt < 6 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    
+    // Default to battery if we can't detect AC
+    log_message("Could not detect AC power after retries, defaulting to battery");
+    false
 }
 
 /// Synchronously run pre-suspend command with 5s timeout
@@ -364,6 +407,9 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
         let mut last_power_state = None;
 
+        // Give the system a moment to settle on startup
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
         loop {
             ticker.tick().await;
             let mut timer = idle_timer.lock().await;
@@ -371,6 +417,14 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
             // --- check AC/Battery ---
             let on_ac = is_on_ac_power();
             if last_power_state != Some(on_ac) {
+                log_message(&format!("Power state change detected: {} -> {}", 
+                    match last_power_state {
+                        Some(true) => "AC",
+                        Some(false) => "Battery", 
+                        None => "Unknown"
+                    },
+                    if on_ac { "AC" } else { "Battery" }
+                ));
                 timer.update_power_source(on_ac);
                 last_power_state = Some(on_ac);
             }
@@ -383,24 +437,85 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
 
 /// Check if system is on AC power
 pub fn is_on_ac_power() -> bool {
-    let ac_paths = match fs::read_dir("/sys/class/power_supply/") {
-        Ok(entries) => entries.filter_map(|e| e.ok())
-                              .map(|e| e.path())
-                              .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("AC"))
-                              .collect::<Vec<_>>(),
-        Err(_) => Vec::new(),
-    };
-
-    for ac_path in ac_paths {
-        let online_file = ac_path.join("online");
-        if online_file.exists() {
-            if let Ok(s) = fs::read_to_string(online_file) {
-                if s.trim() == "1" {
-                    return true;
+    // Method 1: Check AC adapters
+    if let Ok(entries) = fs::read_dir("/sys/class/power_supply/") {
+        let mut ac_found = false;
+        let mut battery_charging_or_full = false;
+        
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            
+            // Read the type file to determine what kind of power supply this is
+            let type_file = path.join("type");
+            if let Ok(supply_type) = fs::read_to_string(&type_file) {
+                let supply_type = supply_type.trim();
+                
+                // Check for AC/Mains power supplies
+                if supply_type == "Mains" {
+                    let online_file = path.join("online");
+                    if let Ok(online_status) = fs::read_to_string(&online_file) {
+                        if online_status.trim() == "1" {
+                            log_message(&format!("AC adapter found online: {}", name));
+                            ac_found = true;
+                        }
+                    }
+                }
+                
+                // Check battery status as secondary indicator
+                if supply_type == "Battery" {
+                    let status_file = path.join("status");
+                    if let Ok(status) = fs::read_to_string(&status_file) {
+                        let status = status.trim();
+                        if status == "Charging" || status == "Full" {
+                            battery_charging_or_full = true;
+                            log_message(&format!("Battery status: {} ({})", status, name));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Primary method: AC adapter online
+        if ac_found {
+            return true;
+        }
+        
+        // Fallback: If no AC adapter found but battery is charging/full, assume on AC
+        // This helps with systems where AC detection is unreliable
+        if battery_charging_or_full {
+            log_message("No AC adapter detected, but battery is charging/full - assuming on AC");
+            return true;
+        }
+    }
+    
+    // Method 2: Fallback - check legacy AC paths with broader naming
+    let potential_ac_names = [
+        "AC", "ADP", "ACAD", "AC0", "ADP1", "ACPI0003", 
+        "ACPI0004", "ADP0", "AC1", "ACADAPTER"
+    ];
+    
+    if let Ok(entries) = fs::read_dir("/sys/class/power_supply/") {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name_os = entry.file_name();
+            let name = name_os.to_string_lossy().to_string();
+            
+            // Check if name matches any known AC adapter patterns
+            if potential_ac_names.iter().any(|&ac_name| 
+                name.starts_with(ac_name) || name.contains(ac_name)) {
+                
+                let online_file = entry.path().join("online");
+                if let Ok(status) = fs::read_to_string(&online_file) {
+                    if status.trim() == "1" {
+                        log_message(&format!("Legacy AC detection found: {}", name));
+                        return true;
+                    }
                 }
             }
         }
     }
-
+    
+    log_message("No AC power detected - running on battery");
     false
 }
+
