@@ -1,7 +1,6 @@
 @author "Dustin Pilgrim"
 @description "Stasis configuration file"
 
-# Default idle timeout (seconds)
 app_default_timeout 300
 
 idle:
@@ -18,41 +17,78 @@ idle:
     r"steam_app_.*"
     r"firefox.*"
   ]
-  
-  # Named idle actions
-  # ------------------
 
-  lock_screen:                 # IdleActionKind::LockScreen
-    timeout = app_default_timeout
-    command "swaylock"
+  # Desktop-only idle actions
+  lock_screen:
+    timeout = 300
+    command "brightnessctl set 10% && sleep 0.2 && swaylock"
   end
-  
-  suspend:                      # IdleActionKind::Suspend
+
+  suspend:
     timeout 1800
     command "systemctl suspend"
   end
-  
-  dpms:                          # IdleActionKind::Dpms
+
+  dpms:
     timeout 330
     command "niri msg action power-off-monitors"
   end
 
-  #brightness:
-  #  timeout 320
-  #  command "brightnessctl set 10%-"
-  #end
-  
-  # Custom idle actions
-  # -------------------
+  # Laptop-only AC actions
+  on_ac:
 
-  #hibernate:                     # IdleActionKind::Custom
-  #  timeout 3600
-  #  command "systemctl hibernate"
-  #end
-  
-  #shutdown:                      # IdleActionKind::Custom
-  #  timeout 7200
-  #  command "systemctl poweroff"
-  #end
+    lock_screen:
+      command "brightnessctl set 20% && sleep 0.2 && swaylock"
+      timeout 300
+    end
+
+    dpms:
+      command "niri msg action power-off-monitors"
+      timeout 300
+    end
+
+    brightness:
+      command "brightnessctl set 100%"
+      timeout 0
+    end
+
+    suspend:
+      command "systemctl suspend"
+      timeout 1800
+    end
+
+    custom:
+      command "notify-send 'AC mode custom action'"
+      timeout 300
+    end
+  end
+
+  # Laptop-only battery actions
+  on_battery:
+
+    lock_screen:
+      command "brightnessctl set 10% && sleep 0.2 && swaylock"
+      timeout 300
+    end
+
+    dpms:
+      command "niri msg action power-off-monitors"
+      timeout 300
+    end
+
+    brightness:
+      command "brightnessctl set 30%"
+      timeout 0
+    end
+
+    suspend:
+      command "systemctl suspend"
+      timeout 1200
+    end
+
+    custom:
+      command "notify-send 'Battery mode custom action'"
+      timeout 300
+    end
+  end
 end
-

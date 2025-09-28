@@ -2,60 +2,84 @@ use eyre::Result;
 use std::sync::Arc;
 use std::path::PathBuf;
 use tokio::task::LocalSet;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokio::net::UnixListener;
 use std::fs;
 
+mod actions;
 mod app_inhibit;
+mod brightness;
 mod config;
 mod control;
 mod idle_timer;
 mod libinput;
-mod wayland_input;
+mod log;
 mod media;
-mod actions;
 mod utils;
+mod wayland;
 
-use utils::{log_message, log_error_message};
+use crate::wayland::wayland_input;
+use log::{log_message, log_error_message, set_verbose};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "Stasis",
     version = env!("CARGO_PKG_VERSION"), 
-    about = "Capable idle manager for Wayland", 
+    about = "Capable idle manager for Wayland\n\nFor configuration details, see `man 5 stasis`", 
     long_about = None
 )]
 struct Args {
-    #[arg(short, long, action)]
-    reload_config: bool,
-
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
-
     #[arg(short, long, action)]
     verbose: bool,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    ReloadConfig,
+    Pause,
+    Resume,
+    TriggerIdle,
+    TriggerPreSuspend,
+    Stop,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Reload mode bypasses single instance
-    if args.reload_config {
+    // If a subcommand was passed, try sending it to the running instance
+    if let Some(cmd) = &args.command {
         use tokio::net::UnixStream;
         use tokio::io::AsyncWriteExt;
 
         let socket_path = "/tmp/stasis.sock";
+
+        // Map the enum to a control string
+        let msg = match cmd {
+            Commands::ReloadConfig => "reload",
+            Commands::Pause => "pause",
+            Commands::Resume => "resume",
+            Commands::TriggerIdle => "trigger_idle",
+            Commands::TriggerPreSuspend => "trigger_presuspend",
+            Commands::Stop => "stop",
+        };
+
+        // Try connecting to the running daemon
         match UnixStream::connect(socket_path).await {
             Ok(mut stream) => {
-                let _ = stream.write_all(b"reload").await;
-                log_message("Sent reload request to running instance");
+                let _ = stream.write_all(msg.as_bytes()).await;
+                log_message(&format!("Sent '{}' request to running instance", msg));
             }
             Err(_) => {
                 log_error_message("No running instance found");
             }
         }
 
+        // Exit after sending command; do not start a new daemon
         return Ok(());
     }
 
@@ -88,7 +112,7 @@ async fn main() -> Result<()> {
 
     if args.verbose {
         log_message("Verbose mode enabled");
-        utils::set_verbose(true);
+        set_verbose(true);
     }
 
     let cfg = Arc::new(config::load_config(config_path.to_str().unwrap())?);
@@ -99,17 +123,19 @@ async fn main() -> Result<()> {
     app_inhibit::spawn_app_inhibit_task(Arc::clone(&idle_timer), Arc::clone(&cfg));
 
     // Use the pre-bound listener for control socket
-    control::spawn_control_socket_with_listener(Arc::clone(&idle_timer), config_path.to_str().unwrap().to_string(), listener);
+    control::spawn_control_socket_with_listener(
+        Arc::clone(&idle_timer),
+        config_path.to_str().unwrap().to_string(),
+        listener,
+    );
 
     let local = LocalSet::new();
-
     local.run_until(async {
         wayland_input::setup(Arc::clone(&idle_timer), cfg.respect_idle_inhibitors).await?;
         if cfg.monitor_media {
             media::setup(Arc::clone(&idle_timer))?;
         }
         log_message(&format!("Running. Idle actions loaded: {}", cfg.actions.len()));
-
         std::future::pending::<()>().await;
         #[allow(unreachable_code)]
         Ok::<(), eyre::Report>(())
@@ -127,12 +153,13 @@ fn get_config_path() -> Result<PathBuf> {
             return Ok(path);
         }
     }
+    
     let fallback = PathBuf::from("/etc/stasis/stasis.rune");
     if fallback.exists() {
         return Ok(fallback);
     }
+    
     Err(eyre::eyre!(
         "Could not find stasis configuration file in home or /etc/stasis/"
     ))
 }
-

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::time::sleep;
 use std::time::Duration;
 
-use crate::utils::log_to_cache;
+use crate::log::log_to_cache;
 
 use wayland_client::{
     protocol::{wl_registry, wl_seat::WlSeat},

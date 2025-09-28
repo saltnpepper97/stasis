@@ -179,44 +179,55 @@ idle:
   pre_suspend_command "notify-send 'System suspending in 5 seconds' && sleep 5"
   monitor_media true
   respect_idle_inhibitors true
-  
+
+  # App inhibition
   inhibit_apps [
-    "spotify"
+    "vlc"
+    "Spotify"
     "mpv"
     r".*\.exe"
-    r"steam_app_\d+.*"
+    r"steam_app_.*"
+    r"firefox.*"
   ]
   
-  lock_screen:
-    timeout = app_default_timeout # 5 minutes
-    command "hyprlock"
+  # Named idle actions
+  # ------------------
+  lock_screen:                 # IdleActionKind::LockScreen
+    timeout = app_default_timeout
+    command "swaylock"
   end
   
-  suspend:
-    timeout 1800 # 30 minutes
+  suspend:                      # IdleActionKind::Suspend
+    timeout 1800
     command "systemctl suspend"
   end
   
-  dpms:
-    timeout 600 # 10 minutes
-    command "wlopm --off '*'"
+  dpms:                          # IdleActionKind::Dpms
+    timeout 330
+    command "niri msg action power-off-monitors"
   end
+
+  # Laptop brightness example (optional)
+  #brightness:
+  #  timeout 320
+  #  command "brightnessctl set 10%-"
+  #end
+
+  # Immediate AC/Battery commands
+  on_ac "brightnessctl set 100%"
+  on_battery "brightnessctl set 30%"
   
-  brightness:
-    timeout 120 # 2 minutes
-    command "brightnessctl set 10%"
-  end
+  # Custom idle actions
+  # -------------------
+  #hibernate:                     # IdleActionKind::Custom
+  #  timeout 3600
+  #  command "systemctl hibernate"
+  #end
   
-  # Custom action blocks
-  hibernate:
-    timeout 3600 # 1 hour
-    command "systemctl hibernate"
-  end
-  
-  notify_long_idle:
-    timeout 900 # 15 minutes
-    command "notify-send 'You have been idle for 15 minutes'"
-  end
+  #shutdown:                      # IdleActionKind::Custom
+  #  timeout 7200
+  #  command "systemctl poweroff"
+  #end
 end
 ```
 

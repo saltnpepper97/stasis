@@ -6,7 +6,7 @@ use serde_json::Value;
 use sysinfo::{System, RefreshKind, ProcessRefreshKind, ProcessesToUpdate};
 
 use crate::config::IdleConfig;
-use crate::utils::log_message;
+use crate::log::log_message;
 
 /// Tracks currently running apps to inhibit idle
 pub struct AppInhibitor {

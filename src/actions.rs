@@ -1,11 +1,11 @@
 use std::process::{Command, Stdio};
 use eyre::Result;
-use crate::utils::{log_message, log_error_message};
+use crate::log::{log_message, log_error_message};
 use crate::config::{IdleAction, IdleActionKind};
 use crate::idle_timer::IdleTimer;
 
 /// Called when the idle timer reaches any timeout
-pub fn on_idle_timeout(action: &IdleAction, idle_timer: Option<&IdleTimer>) {
+pub fn on_idle_timeout(action: &IdleAction, idle_timer: Option<&mut IdleTimer>) {
     log_message(&format!("Idle timeout reached for '{}'", action.command));
 
     let cmd = action.command.clone();
@@ -14,7 +14,7 @@ pub fn on_idle_timeout(action: &IdleAction, idle_timer: Option<&IdleTimer>) {
     // Trigger pre-suspend command if this action is Suspend
     if kind == IdleActionKind::Suspend {
         if let Some(timer) = idle_timer {
-            timer.trigger_pre_suspend();
+            timer.trigger_pre_suspend(false);
         }
     }
 

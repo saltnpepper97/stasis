@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt};
 use eyre::Result;
 use regex::Regex;
 use rune_cfg::{RuneConfig, Value};
-use crate::utils::log_message;
+use crate::{log::log_message, utils::is_laptop};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IdleActionKind {
@@ -32,7 +32,6 @@ pub struct IdleAction {
     pub kind: IdleActionKind,
 }
 
-/// New enum to represent literal or regex app patterns
 #[derive(Debug, Clone)]
 pub enum AppPattern {
     Literal(String),
@@ -49,12 +48,9 @@ pub struct IdleConfig {
     pub inhibit_apps: Vec<AppPattern>,
 }
 
-/// Helper to convert a string to AppPattern
 fn parse_app_pattern(s: &str) -> Result<AppPattern> {
     let regex_meta = ['.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\', '^', '$'];
-    
     if s.chars().any(|c| regex_meta.contains(&c)) {
-        // treat as regex
         let re = Regex::new(s)?;
         Ok(AppPattern::Regex(re))
     } else {
@@ -62,60 +58,10 @@ fn parse_app_pattern(s: &str) -> Result<AppPattern> {
     }
 }
 
-
-#[allow(dead_code)]
-/// Recursive helper to print nested blocks for debugging
-fn print_block(config: &RuneConfig, path: &str, indent: usize) -> Result<()> {
-    for key in config.get_keys(path)? {
-        let full_path = if path.is_empty() { key.clone() } else { format!("{}.{}", path, key) };
-        let value = config.get_value(&full_path)?;
-        match value {
-            Value::Object(_) => {
-                println!("{}{}:", " ".repeat(indent), key);
-                print_block(config, &full_path, indent + 2)?;
-            }
-            Value::Array(ref arr) => {
-                println!("{}{} = {:?}", " ".repeat(indent), key, arr);
-            }
-            _ => {
-                println!("{}{} = {:?}", " ".repeat(indent), key, value);
-            }
-        }
-    }
-    Ok(())
-}
-
-pub fn load_config(path: &str) -> Result<IdleConfig> {
-    // Load the .rune config
-    let config = RuneConfig::from_file(path)?;
-
-    fn get_array(config: &RuneConfig, path: &str) -> Vec<Value> {
-        match config.get_value(path) {
-            Ok(Value::Array(arr)) => arr,
-            _ => Vec::new(),
-        }
-    }
-
-    // ---- Globals ----
-    let resume_command: Option<String> = config.get("idle.resume_command").ok();
-    let pre_suspend_command: Option<String> = config.get("idle.pre_suspend_command").ok();
-    let monitor_media: bool = config.get("idle.monitor_media").unwrap_or(true);
-    let respect_idle_inhibitors: bool = config.get("idle.respect_idle_inhibitors").unwrap_or(true);
-    let inhibit_raw = get_array(&config, "idle.inhibit_apps");
- 
-    let inhibit_apps: Vec<AppPattern> = inhibit_raw
-        .iter()
-        .filter_map(|v| match v {
-            Value::String(s) => parse_app_pattern(s).ok(),
-            Value::Regex(s) => Regex::new(s).ok().map(AppPattern::Regex),
-            _ => None,
-        })
-        .collect();
-
-    // ---- Collect idle actions ----
+fn collect_actions(config: &RuneConfig, path: &str) -> HashMap<String, IdleAction> {
     let mut actions = HashMap::new();
-    if let Ok(action_keys) = config.get_keys("idle") {
-        for key in action_keys {
+    if let Ok(keys) = config.get_keys(path) {
+        for key in keys {
             if matches!(
                 key.as_str(),
                 "resume_command" | "pre_suspend_command" | "monitor_media" | "respect_idle_inhibitors" | "inhibit_apps"
@@ -123,14 +69,7 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
                 continue;
             }
 
-            let timeout_path = format!("idle.{}.timeout", key);
-            let command_path = format!("idle.{}.command", key);
-
-            let timeout_seconds: u64 = match config.get(&timeout_path) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-
+            let command_path = format!("{}.{}.command", path, key);
             let command: String = match config.get(&command_path) {
                 Ok(s) => s,
                 Err(_) => continue,
@@ -138,11 +77,14 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
 
             let kind = match key.as_str() {
                 "lock_screen" | "lock-screen" => IdleActionKind::LockScreen,
-                "suspend"     => IdleActionKind::Suspend,
-                "dpms"        => IdleActionKind::Dpms,
-                "brightness"  => IdleActionKind::Brightness,
-                _             => IdleActionKind::Custom,
+                "suspend" => IdleActionKind::Suspend,
+                "dpms" => IdleActionKind::Dpms,
+                "brightness" => IdleActionKind::Brightness,
+                _ => IdleActionKind::Custom,
             };
+
+            let timeout_seconds: u64 =
+                config.get(&format!("{}.{}.timeout", path, key)).unwrap_or(300);
 
             actions.insert(
                 key.clone(),
@@ -154,28 +96,98 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
             );
         }
     }
+    actions
+}
 
-    // ---- DEBUG PRINT ----
-    log_message("Parsed Config:");
-    if let Some(doc) = config.document() {
-        log_message(&format!("Globals: {:?}", doc.globals));
-        log_message(&format!("Metadata: {:?}", doc.metadata));
+pub fn load_config(path: &str) -> Result<IdleConfig> {
+    let config = RuneConfig::from_file(path)?;
+
+    fn get_array(config: &RuneConfig, path: &str) -> Vec<Value> {
+        match config.get_value(path) {
+            Ok(Value::Array(arr)) => arr,
+            _ => Vec::new(),
+        }
     }
+
+    let resume_command: Option<String> = config.get("idle.resume_command").ok();
+    let pre_suspend_command: Option<String> = config.get("idle.pre_suspend_command").ok();
+    let monitor_media: bool = config.get("idle.monitor_media").unwrap_or(true);
+    let respect_idle_inhibitors: bool = config.get("idle.respect_idle_inhibitors").unwrap_or(true);
+    let inhibit_raw = get_array(&config, "idle.inhibit_apps");
+
+    let inhibit_apps: Vec<AppPattern> = inhibit_raw
+        .iter()
+        .filter_map(|v| match v {
+            Value::String(s) => parse_app_pattern(s).ok(),
+            Value::Regex(s) => Regex::new(s).ok().map(AppPattern::Regex),
+            _ => None,
+        })
+        .collect();
+
+    // Determine if laptop or desktop
+    let laptop = is_laptop();
+
+    // Inside load_config
+    let actions = if laptop {
+        let mut map = HashMap::new();
+
+        for ac_key in &["on_ac", "on-ac"] {
+            if let Ok(keys) = config.get_keys(&format!("idle.{}", ac_key)) {
+                for key in keys {
+                    let command_path = format!("idle.{}.{}.command", ac_key, key);
+                    if let Ok(command) = config.get::<String>(&command_path) {
+                        let kind = match key.as_str() {
+                            "lock_screen" | "lock-screen" => IdleActionKind::LockScreen,
+                            "suspend" => IdleActionKind::Suspend,
+                            "dpms" => IdleActionKind::Dpms,
+                            "brightness" => IdleActionKind::Brightness,
+                            _ => IdleActionKind::Custom,
+                        };
+                        let timeout_seconds: u64 =
+                            config.get(&format!("idle.{}.{}.timeout", ac_key, key)).unwrap_or(0);
+                        map.insert(format!("ac.{}", key), IdleAction { timeout_seconds, command, kind });
+                    }
+                }
+            }
+        }
+
+        for bat_key in &["on_battery", "on-battery"] {
+            if let Ok(keys) = config.get_keys(&format!("idle.{}", bat_key)) {
+                for key in keys {
+                    let command_path = format!("idle.{}.{}.command", bat_key, key);
+                    if let Ok(command) = config.get::<String>(&command_path) {
+                        let kind = match key.as_str() {
+                            "lock_screen" | "lock-screen" => IdleActionKind::LockScreen,
+                            "suspend" => IdleActionKind::Suspend,
+                            "dpms" => IdleActionKind::Dpms,
+                            "brightness" => IdleActionKind::Brightness,
+                            _ => IdleActionKind::Custom,
+                        };
+                        let timeout_seconds: u64 =
+                            config.get(&format!("idle.{}.{}.timeout", bat_key, key)).unwrap_or(0);
+                        map.insert(format!("battery.{}", key), IdleAction { timeout_seconds, command, kind });
+                    }
+                }
+            }
+        }
+
+        map
+    } else {
+        collect_actions(&config, "idle")
+    };
+
+    log_message("Parsed Config:");
     log_message(&format!("  resume_command = {:?}", resume_command));
     log_message(&format!("  monitor_media = {:?}", monitor_media));
     log_message(&format!("  respect_idle_inhibitors = {:?}", respect_idle_inhibitors));
-    log_message(&format!("  inhibit_apps = {:?}", inhibit_apps));    
+    log_message(&format!("  inhibit_apps = {:?}", inhibit_apps));
     log_message("  actions:");
     for (key, action) in &actions {
         log_message(&format!(
             "    {}: timeout={}s, kind={:?}, command=\"{}\"",
-            key,
-            action.timeout_seconds,
-            action.kind,
-            action.command
+            key, action.timeout_seconds, action.kind, action.command
         ));
     }
-
 
     Ok(IdleConfig {
         actions,
@@ -186,4 +198,3 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
         inhibit_apps,
     })
 }
-
