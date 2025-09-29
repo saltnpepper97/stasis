@@ -53,6 +53,12 @@ enum Commands {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // --- Check Wayland environment ---
+    if std::env::var("WAYLAND_DISPLAY").is_err() {
+        eprintln!("Error: Wayland is not detected. Stasis requires Wayland to run.");
+        std::process::exit(1);
+    }
+   
     // If a subcommand was passed, try sending it to the running instance
     if let Some(cmd) = &args.command {
         use tokio::net::UnixStream;
