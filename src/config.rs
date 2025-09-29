@@ -38,6 +38,15 @@ pub enum AppPattern {
     Regex(Regex),
 }
 
+impl fmt::Display for AppPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppPattern::Literal(s) => write!(f, "{}", s),
+            AppPattern::Regex(r) => write!(f, "(regex) {}", r.as_str()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct IdleConfig {
     pub actions: HashMap<String, IdleAction>,
@@ -72,10 +81,7 @@ impl IdleConfig {
         if self.inhibit_apps.is_empty() {
             output.push_str("None\n");
         } else {
-            let app_list: Vec<String> = self.inhibit_apps.iter().map(|p| match p {
-                AppPattern::Literal(s) => s.clone(),
-                AppPattern::Regex(r) => format!("(regex) {}", r),
-            }).collect();
+            let app_list: Vec<String> = self.inhibit_apps.iter().map(|p| p.to_string()).collect();
             output.push_str(&format!("{}\n", app_list.join(", ")));
         }
 
@@ -99,12 +105,10 @@ impl IdleConfig {
         for (group, actions) in grouped {
             output.push_str(&format!("  [{}]\n", group));
 
-            // Sort by key name (full key including prefix)
             let mut sorted = actions.clone();
             sorted.sort_by(|a, b| a.0.cmp(b.0));
 
             for (key, action) in sorted {
-                // Print full key, no stripping
                 output.push_str(&format!(
                     "    {:<22} | timeout: {:>5}s | kind: {:<12} | command: {}\n",
                     key,
@@ -119,6 +123,8 @@ impl IdleConfig {
     }
 }
 
+// --- Helpers ---
+
 fn parse_app_pattern(s: &str) -> Result<AppPattern> {
     let regex_meta = ['.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\', '^', '$'];
     if s.chars().any(|c| regex_meta.contains(&c)) {
@@ -127,6 +133,11 @@ fn parse_app_pattern(s: &str) -> Result<AppPattern> {
     } else {
         Ok(AppPattern::Literal(s.to_string()))
     }
+}
+
+// Normalize keys for Rune: convert _ to -
+fn normalize_key(key: &str) -> String {
+    key.replace('_', "-")
 }
 
 fn collect_actions(config: &RuneConfig, path: &str) -> HashMap<String, IdleAction> {
@@ -141,7 +152,7 @@ fn collect_actions(config: &RuneConfig, path: &str) -> HashMap<String, IdleActio
             }
 
             let command_path = format!("{}.{}.command", path, key);
-            let command: String = match config.get(&command_path) {
+            let command: String = match config.get(&normalize_key(&command_path)) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -155,10 +166,10 @@ fn collect_actions(config: &RuneConfig, path: &str) -> HashMap<String, IdleActio
             };
 
             let timeout_seconds: u64 =
-                config.get(&format!("{}.{}.timeout", path, key)).unwrap_or(300);
+                config.get(&normalize_key(&format!("{}.{}.timeout", path, key))).unwrap_or(300);
 
             actions.insert(
-                key.clone(),
+                normalize_key(&key),
                 IdleAction {
                     timeout_seconds,
                     command,
@@ -180,18 +191,21 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
         }
     }
 
-    fn get_string_either(config: &RuneConfig, underscore: &str, hyphen: &str) -> Option<String> {
-    config.get(underscore).or_else(|_| config.get(hyphen)).ok()
-}
+    fn get_string(config: &RuneConfig, key: &str) -> Option<String> {
+        config.get(&normalize_key(key)).ok()
+    }
 
-let resume_command: Option<String> =
-    get_string_either(&config, "idle.resume_command", "idle.resume-command");
+    fn get_bool(config: &RuneConfig, key: &str, default: bool) -> bool {
+        config.get(&normalize_key(key)).unwrap_or(default)
+    }
 
-let pre_suspend_command: Option<String> =
-    get_string_either(&config, "idle.pre_suspend_command", "idle.pre-suspend-command");    let monitor_media: bool = config.get("idle.monitor_media").unwrap_or(true);
-    let respect_idle_inhibitors: bool = config.get("idle.respect_idle_inhibitors").unwrap_or(true);
+    // --- General fields ---
+    let resume_command = get_string(&config, "idle.resume_command");
+    let pre_suspend_command = get_string(&config, "idle.pre_suspend_command");
+    let monitor_media = get_bool(&config, "idle.monitor_media", true);
+    let respect_idle_inhibitors = get_bool(&config, "idle.respect_idle_inhibitors", true);
+
     let inhibit_raw = get_array(&config, "idle.inhibit_apps");
-
     let inhibit_apps: Vec<AppPattern> = inhibit_raw
         .iter()
         .filter_map(|v| match v {
@@ -204,15 +218,15 @@ let pre_suspend_command: Option<String> =
     // Determine if laptop or desktop
     let laptop = is_laptop();
 
-    // Inside load_config
+    // --- Actions ---
     let actions = if laptop {
         let mut map = HashMap::new();
 
         for ac_key in &["on_ac", "on-ac"] {
-            if let Ok(keys) = config.get_keys(&format!("idle.{}", ac_key)) {
+            if let Ok(keys) = config.get_keys(&normalize_key(&format!("idle.{}", ac_key))) {
                 for key in keys {
                     let command_path = format!("idle.{}.{}.command", ac_key, key);
-                    if let Ok(command) = config.get::<String>(&command_path) {
+                    if let Ok(command) = config.get::<String>(&normalize_key(&command_path)) {
                         let kind = match key.as_str() {
                             "lock_screen" | "lock-screen" => IdleActionKind::LockScreen,
                             "suspend" => IdleActionKind::Suspend,
@@ -220,19 +234,27 @@ let pre_suspend_command: Option<String> =
                             "brightness" => IdleActionKind::Brightness,
                             _ => IdleActionKind::Custom,
                         };
-                        let timeout_seconds: u64 =
-                            config.get(&format!("idle.{}.{}.timeout", ac_key, key)).unwrap_or(0);
-                        map.insert(format!("ac.{}", key), IdleAction { timeout_seconds, command, kind });
+                        let timeout_seconds: u64 = config
+                            .get(&normalize_key(&format!("idle.{}.{}.timeout", ac_key, key)))
+                            .unwrap_or(0);
+                        map.insert(
+                            format!("ac.{}", normalize_key(&key)),
+                            IdleAction {
+                                timeout_seconds,
+                                command,
+                                kind,
+                            },
+                        );
                     }
                 }
             }
         }
 
         for bat_key in &["on_battery", "on-battery"] {
-            if let Ok(keys) = config.get_keys(&format!("idle.{}", bat_key)) {
+            if let Ok(keys) = config.get_keys(&normalize_key(&format!("idle.{}", bat_key))) {
                 for key in keys {
                     let command_path = format!("idle.{}.{}.command", bat_key, key);
-                    if let Ok(command) = config.get::<String>(&command_path) {
+                    if let Ok(command) = config.get::<String>(&normalize_key(&command_path)) {
                         let kind = match key.as_str() {
                             "lock_screen" | "lock-screen" => IdleActionKind::LockScreen,
                             "suspend" => IdleActionKind::Suspend,
@@ -240,9 +262,17 @@ let pre_suspend_command: Option<String> =
                             "brightness" => IdleActionKind::Brightness,
                             _ => IdleActionKind::Custom,
                         };
-                        let timeout_seconds: u64 =
-                            config.get(&format!("idle.{}.{}.timeout", bat_key, key)).unwrap_or(0);
-                        map.insert(format!("battery.{}", key), IdleAction { timeout_seconds, command, kind });
+                        let timeout_seconds: u64 = config
+                            .get(&normalize_key(&format!("idle.{}.{}.timeout", bat_key, key)))
+                            .unwrap_or(0);
+                        map.insert(
+                            format!("battery.{}", normalize_key(&key)),
+                            IdleAction {
+                                timeout_seconds,
+                                command,
+                                kind,
+                            },
+                        );
                     }
                 }
             }
@@ -258,7 +288,14 @@ let pre_suspend_command: Option<String> =
     log_message(&format!("  monitor_media = {:?}", monitor_media));
     log_message(&format!("  respect_idle_inhibitors = {:?}", respect_idle_inhibitors));
     log_message(&format!("  pre_suspend_command = {:?}", pre_suspend_command));
-    log_message(&format!("  inhibit_apps = {:?}", inhibit_apps));
+    log_message(&format!(
+        "  inhibit_apps = [{}]",
+        inhibit_apps
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
     log_message("  actions:");
     for (key, action) in &actions {
         log_message(&format!(
