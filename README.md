@@ -53,7 +53,7 @@ Stasis uses each compositor's native IPC protocol for app inhibiting functionali
 
 ### Arch Linux (AUR)
 
-Available on the AUR as `stasis`.
+Available on the AUR as `stasis` or `stasis-git` for latest commit.
 
 Using `yay`:
 ```bash
