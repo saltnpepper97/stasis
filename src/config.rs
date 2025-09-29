@@ -89,7 +89,7 @@ impl IdleConfig {
             } else if key.starts_with("battery.") {
                 "Battery"
             } else {
-                "Other"
+                "Desktop"
             };
             grouped.entry(prefix).or_default().push((key, action));
         }
