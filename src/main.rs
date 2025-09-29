@@ -5,7 +5,7 @@ use tokio::task::LocalSet;
 use clap::{Parser, Subcommand};
 use tokio::net::UnixListener;
 use std::fs;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod actions;
 mod app_inhibit;
@@ -58,15 +58,13 @@ async fn main() -> Result<()> {
         eprintln!("Error: Wayland is not detected. Stasis requires Wayland to run.");
         std::process::exit(1);
     }
-   
-    // If a subcommand was passed, try sending it to the running instance
+
+    let socket_path = "/tmp/stasis.sock";
+
+    // --- HANDLE SUBCOMMAND ---
     if let Some(cmd) = &args.command {
         use tokio::net::UnixStream;
-        use tokio::io::AsyncWriteExt;
 
-        let socket_path = "/tmp/stasis.sock";
-
-        // Map the enum to a control string
         let msg = match cmd {
             Commands::ReloadConfig => "reload",
             Commands::Pause => "pause",
@@ -77,58 +75,43 @@ async fn main() -> Result<()> {
             Commands::Stats => "stats",
         };
 
-        // Try connecting to the running daemon
-
-match UnixStream::connect(socket_path).await {
-    Ok(mut stream) => {
-        let _ = stream.write_all(msg.as_bytes()).await;
-
-        if msg == "stats" {
-            let mut response = Vec::new();
-            match stream.read_to_end(&mut response).await {
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&response);
-                    println!("{}", text);
-                }
-                Err(e) => {
-                    println!("Failed to read stats: {e}");
+        match UnixStream::connect(socket_path).await {
+            Ok(mut stream) => {
+                let _ = stream.write_all(msg.as_bytes()).await;
+                if msg == "stats" {
+                    let mut response = Vec::new();
+                    let _ = stream.read_to_end(&mut response).await;
+                    println!("{}", String::from_utf8_lossy(&response));
                 }
             }
+            Err(_) => log_error_message("No running instance found"),
         }
-    }
-    Err(_) => {
-        log_error_message("No running instance found");
-    }
-}
 
-
-        // Exit after sending command; do not start a new daemon
         return Ok(());
     }
 
+    // --- CHECK IF HELP OR VERSION ARGUMENTS ARE PRESENT ---
     let just_help_or_version = std::env::args().any(|a| {
         matches!(a.as_str(), "-V" | "--version" | "-h" | "--help" | "help")
     });
 
     // --- SINGLE INSTANCE CHECK ---
-    let socket_path = "/tmp/stasis.sock";
-
-    // Try connecting first
-    if let Ok(mut _stream) = tokio::net::UnixStream::connect(socket_path).await {
-        if !just_help_or_version && args.command.is_none() {
+    if let Ok(_) = tokio::net::UnixStream::connect(socket_path).await {
+        if !just_help_or_version {
             println!("Another instance of Stasis is already running.");
         }
         log_error_message("Another instance is already running.");
         return Ok(());
     }
 
-    // If connection fails, remove stale socket
+    // Remove stale socket before binding
     let _ = fs::remove_file(socket_path);
 
+    // --- BIND SOCKET ---
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
         Err(_) => {
-            log_error_message("Another instance is already running. Please run help for subcommands");
+            log_error_message("Failed to bind control socket. Another instance may be running.");
             return Ok(());
         }
     };
@@ -152,7 +135,7 @@ match UnixStream::connect(socket_path).await {
     libinput::spawn_libinput_task(Arc::clone(&idle_timer));
     app_inhibit::spawn_app_inhibit_task(Arc::clone(&idle_timer), Arc::clone(&cfg));
 
-    // Use the pre-bound listener for control socket
+    // Use pre-bound listener for control socket
     control::spawn_control_socket_with_listener(
         Arc::clone(&idle_timer),
         config_path.to_str().unwrap().to_string(),
@@ -183,12 +166,12 @@ fn get_config_path() -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    
+
     let fallback = PathBuf::from("/etc/stasis/stasis.rune");
     if fallback.exists() {
         return Ok(fallback);
     }
-    
+
     Err(eyre::eyre!(
         "Could not find stasis configuration file in home or /etc/stasis/"
     ))

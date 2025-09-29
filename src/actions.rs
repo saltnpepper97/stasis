@@ -14,7 +14,7 @@ pub fn on_idle_timeout(action: &IdleAction, idle_timer: Option<&mut IdleTimer>) 
     // Trigger pre-suspend command if this action is Suspend
     if kind == IdleActionKind::Suspend {
         if let Some(timer) = idle_timer {
-            timer.trigger_pre_suspend(false);
+            timer.trigger_pre_suspend(false, false);
         }
     }
 

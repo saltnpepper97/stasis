@@ -49,7 +49,7 @@ pub fn spawn_control_socket_with_listener(
                         }
                         "trigger_presuspend" => {
                             let mut timer = idle_timer.lock().await;
-                            timer.trigger_pre_suspend(false);
+                            timer.trigger_pre_suspend(false, true);
                             log_message("Pre-suspend command triggered");
                         }
                         "stop" => {

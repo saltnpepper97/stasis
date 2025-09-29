@@ -16,6 +16,7 @@ pub struct IdleTimer {
     #[allow(dead_code)]
     battery_actions: Vec<IdleAction>, // only OnBattery actions
     resume_command: Option<String>,
+    suspend_occurred: bool,
     pre_suspend_command: Option<String>,
     is_idle_flags: Vec<bool>,
     compositor_managed: bool,
@@ -95,6 +96,7 @@ impl IdleTimer {
             previous_brightness: None,
             on_ac,
             paused: false,
+            suspend_occurred: false,
         };
 
         // Trigger all timeout=0 actions immediately during initialization
@@ -136,6 +138,7 @@ impl IdleTimer {
         }
     }
     
+
     pub fn reset(&mut self) {
         let was_idle = self.is_idle_flags.iter().any(|&b| b);
         self.last_activity = Instant::now();
@@ -150,18 +153,20 @@ impl IdleTimer {
                 restore_brightness(state);
             }
 
-            // Global resume command (user-defined)
-            if let Some(cmd) = &self.resume_command {
-                log_message(&format!("Running resume command: {}", cmd));
-                crate::actions::run_command_silent(cmd).ok();
+            // Only run resume command if a suspend actually occurred
+            if self.suspend_occurred {
+                if let Some(cmd) = &self.resume_command {
+                    log_message(&format!("Running resume command: {}", cmd));
+                    crate::actions::run_command_silent(cmd).ok();
+                }
+                self.suspend_occurred = false; // reset flag after running
             }
         }
 
         self.active_kinds.clear();
         self.previous_brightness = None;
-
-        // Don't re-trigger instant actions on reset - they should only run once per power state/config
     }
+
 
     /// Check which idle actions should trigger (excluding timeout=0 actions)
     pub fn check_idle(&mut self) {
@@ -264,7 +269,12 @@ impl IdleTimer {
     }
 
     /// Run pre-suspend command; optionally rewind timers for manual trigger
-    pub fn trigger_pre_suspend(&mut self, rewind_timers: bool) {
+    pub fn trigger_pre_suspend(&mut self, rewind_timers: bool, manual: bool) {
+        if !manual {
+            // Only mark that suspend is pending if this is an idle-timer-triggered pre-suspend
+            self.suspend_occurred = true; // will trigger resume_command later
+        }
+
         if let Some(cmd) = &self.pre_suspend_command {
             log_message(&format!("Running pre-suspend command: {}", cmd));
             if let Err(e) = run_pre_suspend_sync(cmd) {
@@ -272,45 +282,18 @@ impl IdleTimer {
             }
 
             if rewind_timers {
-                // Reset everything to start from first action
                 self.last_activity = Instant::now();
                 self.is_idle_flags.iter_mut().for_each(|f| *f = false);
                 self.active_kinds.clear();
-                // Only re-trigger instant actions if explicitly rewinding timers
                 self.trigger_instant_actions(); 
                 log_message("Idle timer rewound to first action after manual pre-suspend");
             } else {
-                // Preserve the exact timer state - don't change anything
-                // The timer will continue naturally from where it was
                 let elapsed = Instant::now().duration_since(self.last_activity);
                 log_message(&format!("Pre-suspend executed, timer state preserved ({}s elapsed)", elapsed.as_secs()));
-                
-                // Debug: show what the next action should be
-                if let Some((_i, action)) = self.get_next_action() {
-                    log_message(&format!("Next action in queue: {} at {}s", action.command, action.timeout_seconds));
-                } else {
-                    log_message("All actions have been triggered");
-                }
             }
+        } else if manual {
+            log_message("Manual pre-suspend triggered, but no pre_suspend_command defined");
         }
-    }
-
-    /// Get the next action that should be triggered based on current elapsed time
-    pub fn get_next_action(&self) -> Option<(usize, &IdleAction)> {
-        let _elapsed = Instant::now().duration_since(self.last_activity);
-        
-        // Create a list of actions with their index, sorted by timeout
-        let mut sorted_actions: Vec<(usize, &IdleAction)> = self.actions.iter().enumerate().collect();
-        sorted_actions.sort_by(|a, b| a.1.timeout_seconds.cmp(&b.1.timeout_seconds));
-        
-        // Find the next untriggered action in the sorted sequence
-        for (original_index, action) in sorted_actions {
-            if !self.is_idle_flags[original_index] {
-                return Some((original_index, action));
-            }
-        }
-        
-        None // All actions have been triggered
     }
 
     pub fn pause(&mut self) {
