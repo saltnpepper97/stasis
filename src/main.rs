@@ -5,6 +5,7 @@ use tokio::task::LocalSet;
 use clap::{Parser, Subcommand};
 use tokio::net::UnixListener;
 use std::fs;
+use tokio::io::AsyncReadExt;
 
 mod actions;
 mod app_inhibit;
@@ -15,6 +16,7 @@ mod idle_timer;
 mod libinput;
 mod log;
 mod media;
+mod power_detection;
 mod utils;
 mod wayland_input;
 
@@ -44,6 +46,7 @@ enum Commands {
     TriggerIdle,
     TriggerPreSuspend,
     Stop,
+    Stats,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -65,17 +68,33 @@ async fn main() -> Result<()> {
             Commands::TriggerIdle => "trigger_idle",
             Commands::TriggerPreSuspend => "trigger_presuspend",
             Commands::Stop => "stop",
+            Commands::Stats => "stats",
         };
 
         // Try connecting to the running daemon
-        match UnixStream::connect(socket_path).await {
-            Ok(mut stream) => {
-                let _ = stream.write_all(msg.as_bytes()).await;
-            }
-            Err(_) => {
-                log_error_message("No running instance found");
+
+match UnixStream::connect(socket_path).await {
+    Ok(mut stream) => {
+        let _ = stream.write_all(msg.as_bytes()).await;
+
+        if msg == "stats" {
+            let mut response = Vec::new();
+            match stream.read_to_end(&mut response).await {
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&response);
+                    println!("{}", text);
+                }
+                Err(e) => {
+                    println!("Failed to read stats: {e}");
+                }
             }
         }
+    }
+    Err(_) => {
+        log_error_message("No running instance found");
+    }
+}
+
 
         // Exit after sending command; do not start a new daemon
         return Ok(());
@@ -103,7 +122,7 @@ async fn main() -> Result<()> {
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
         Err(_) => {
-            log_error_message("Another instance is already running.");
+            log_error_message("Another instance is already running. Please run help for subcommands");
             return Ok(());
         }
     };

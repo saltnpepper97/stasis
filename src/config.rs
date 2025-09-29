@@ -48,6 +48,77 @@ pub struct IdleConfig {
     pub inhibit_apps: Vec<AppPattern>,
 }
 
+impl IdleConfig {
+    pub fn pretty_print(&self) -> String {
+        let mut output = String::new();
+
+        output.push_str("=== Stasis Configuration ===\n\n");
+
+        // General settings
+        output.push_str("General Settings:\n");
+        output.push_str(&format!(
+            "  Resume command      : {}\n",
+            self.resume_command.as_deref().unwrap_or("None")
+        ));
+        output.push_str(&format!(
+            "  Pre-suspend command : {}\n",
+            self.pre_suspend_command.as_deref().unwrap_or("None")
+        ));
+        output.push_str(&format!("  Monitor media       : {}\n", self.monitor_media));
+        output.push_str(&format!("  Respect inhibitors  : {}\n", self.respect_idle_inhibitors));
+
+        // Inhibited apps
+        output.push_str("  Inhibited Apps      : ");
+        if self.inhibit_apps.is_empty() {
+            output.push_str("None\n");
+        } else {
+            let app_list: Vec<String> = self.inhibit_apps.iter().map(|p| match p {
+                AppPattern::Literal(s) => s.clone(),
+                AppPattern::Regex(r) => format!("(regex) {}", r),
+            }).collect();
+            output.push_str(&format!("{}\n", app_list.join(", ")));
+        }
+
+        // Group actions by prefix
+        let mut grouped: std::collections::BTreeMap<&str, Vec<(&String, &IdleAction)>> =
+            std::collections::BTreeMap::new();
+
+        for (key, action) in &self.actions {
+            let prefix = if key.starts_with("ac.") {
+                "AC"
+            } else if key.starts_with("battery.") {
+                "Battery"
+            } else {
+                "Other"
+            };
+            grouped.entry(prefix).or_default().push((key, action));
+        }
+
+        output.push_str("\nIdle Actions:\n");
+
+        for (group, actions) in grouped {
+            output.push_str(&format!("  [{}]\n", group));
+
+            // Sort by key name (full key including prefix)
+            let mut sorted = actions.clone();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+
+            for (key, action) in sorted {
+                // Print full key, no stripping
+                output.push_str(&format!(
+                    "    {:<22} | timeout: {:>5}s | kind: {:<12} | command: {}\n",
+                    key,
+                    action.timeout_seconds,
+                    action.kind,
+                    action.command
+                ));
+            }
+        }
+
+        output
+    }
+}
+
 fn parse_app_pattern(s: &str) -> Result<AppPattern> {
     let regex_meta = ['.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\', '^', '$'];
     if s.chars().any(|c| regex_meta.contains(&c)) {
@@ -109,9 +180,15 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
         }
     }
 
-    let resume_command: Option<String> = config.get("idle.resume_command").ok();
-    let pre_suspend_command: Option<String> = config.get("idle.pre_suspend_command").ok();
-    let monitor_media: bool = config.get("idle.monitor_media").unwrap_or(true);
+    fn get_string_either(config: &RuneConfig, underscore: &str, hyphen: &str) -> Option<String> {
+    config.get(underscore).or_else(|_| config.get(hyphen)).ok()
+}
+
+let resume_command: Option<String> =
+    get_string_either(&config, "idle.resume_command", "idle.resume-command");
+
+let pre_suspend_command: Option<String> =
+    get_string_either(&config, "idle.pre_suspend_command", "idle.pre-suspend-command");    let monitor_media: bool = config.get("idle.monitor_media").unwrap_or(true);
     let respect_idle_inhibitors: bool = config.get("idle.respect_idle_inhibitors").unwrap_or(true);
     let inhibit_raw = get_array(&config, "idle.inhibit_apps");
 
@@ -180,6 +257,7 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
     log_message(&format!("  resume_command = {:?}", resume_command));
     log_message(&format!("  monitor_media = {:?}", monitor_media));
     log_message(&format!("  respect_idle_inhibitors = {:?}", respect_idle_inhibitors));
+    log_message(&format!("  pre_suspend_command = {:?}", pre_suspend_command));
     log_message(&format!("  inhibit_apps = {:?}", inhibit_apps));
     log_message("  actions:");
     for (key, action) in &actions {

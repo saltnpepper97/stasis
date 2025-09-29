@@ -1,12 +1,13 @@
-use std::{collections::HashSet, fs, time::{Duration, Instant}};
+use std::{collections::HashSet, sync::Arc, time::{Duration, Instant}};
 use tokio::sync::Mutex;
-use std::sync::Arc;
 
 use crate::config::{IdleAction, IdleActionKind, IdleConfig};
-use crate::log::log_message;
+use crate::log::{log_message, log_error_message};
 use crate::brightness::{capture_brightness, restore_brightness, BrightnessState};
+use crate::power_detection::{detect_power_state_with_retry, is_on_ac_power};
 
 pub struct IdleTimer {
+    pub cfg: IdleConfig,
     is_laptop: bool,
     last_activity: Instant,
     actions: Vec<IdleAction>,         // currently active actions (AC/Battery)
@@ -26,6 +27,7 @@ pub struct IdleTimer {
 
 impl IdleTimer {
     pub fn new(cfg: &IdleConfig) -> Self {
+        let cfg_clone = cfg.clone();
         // All normal idle actions
         let default_actions = cfg
             .actions
@@ -55,7 +57,7 @@ impl IdleTimer {
             detect_power_state_with_retry(is_laptop)
         } else {
             log_message("Desktop detected, skipping AC/Battery detection");
-            false // or true, doesn't matter, just won't change
+            false
         };
 
         
@@ -74,9 +76,12 @@ impl IdleTimer {
 
         let is_idle_flags = vec![false; actions.len()];
 
-        log_message(&format!("IdleTimer initialized: {} actions, on_ac: {}", actions.len(), on_ac));
+        if is_laptop {
+            log_message(&format!("Laptop detected, on_ac: {}", on_ac));
+        }
 
         let mut timer = Self {
+            cfg: cfg_clone,
             is_laptop,
             last_activity: Instant::now(),
             actions,
@@ -98,6 +103,10 @@ impl IdleTimer {
         timer
     }
 
+    pub fn elapsed_idle(&self) -> Duration {
+        Instant::now().duration_since(self.last_activity)
+    }
+
     /// Trigger all actions with timeout_seconds == 0 exactly once
     fn trigger_instant_actions(&mut self) {
         // Collect instant actions first to avoid borrow checker issues
@@ -113,19 +122,15 @@ impl IdleTimer {
             self.is_idle_flags[i] = true;
             self.active_kinds.insert(action.kind.to_string());
             
-            log_message(&format!("Instant action triggered: {}", action.command));
-            
             // Handle brightness capture for instant brightness actions
             if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
                 if let Some(state) = capture_brightness() {
                     self.previous_brightness = Some(state.clone());
                     log_message(&format!("Captured current brightness: {} (device: {})", state.value, state.device));
                 } else {
-                    log_message("Warning: Could not capture current brightness");
+                    log_error_message("Could not capture current brightness");
                 }
             }
-            
-     
             
             crate::actions::on_idle_timeout(&action, Some(self));
         }
@@ -144,7 +149,6 @@ impl IdleTimer {
                 log_message(&format!("Restoring brightness to {} (device: {})", state.value, state.device));
                 restore_brightness(state);
             }
-
 
             // Global resume command (user-defined)
             if let Some(cmd) = &self.resume_command {
@@ -198,9 +202,6 @@ impl IdleTimer {
                         log_message("Warning: Could not capture current brightness");
                     }
                 }
-
-                // Capture DPMS state only once
-         
 
                 // Trigger the idle action
                 let action_clone = action.clone();
@@ -430,25 +431,6 @@ impl IdleTimer {
     }
 }
 
-/// Detect power state with retries for boot scenarios
-fn detect_power_state_with_retry(is_laptop: bool) -> bool {
-    if !crate::utils::is_laptop() {
-        log_message("Desktop detected, assuming AC power");
-        return true;
-    }
-
-    for attempt in 1..=6 {
-        let on_ac = is_on_ac_power(is_laptop);
-        log_message(&format!("Power detection attempt {}: {}", attempt, if on_ac { "AC" } else { "Battery" }));
-        if on_ac { return true; }
-        if attempt < 6 { std::thread::sleep(Duration::from_millis(500)); }
-    }
-    
-    log_message("Could not detect AC power after retries, defaulting to battery");
-    false
-}
-
-
 /// Synchronously run pre-suspend command with 5s timeout
 fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
@@ -511,93 +493,5 @@ pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
             timer.check_idle();
         }
     });
-}
-
-/// Check if system is on AC power
-pub fn is_on_ac_power(is_laptop: bool) -> bool {
-    if !is_laptop {
-        // Desktop: assume always on AC, no log spam
-        return true;
-    }
-
-    // Method 1: Check AC adapters
-    if let Ok(entries) = fs::read_dir("/sys/class/power_supply/") {
-        let mut ac_found = false;
-        let mut battery_charging_or_full = false;
-        
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let name = path.file_name().unwrap().to_string_lossy();
-            
-            // Read the type file to determine what kind of power supply this is
-            let type_file = path.join("type");
-            if let Ok(supply_type) = fs::read_to_string(&type_file) {
-                let supply_type = supply_type.trim();
-                
-                // Check for AC/Mains power supplies
-                if supply_type == "Mains" {
-                    let online_file = path.join("online");
-                    if let Ok(online_status) = fs::read_to_string(&online_file) {
-                        if online_status.trim() == "1" {
-                            log_message(&format!("AC adapter found online: {}", name));
-                            ac_found = true;
-                        }
-                    }
-                }
-                
-                // Check battery status as secondary indicator
-                if supply_type == "Battery" {
-                    let status_file = path.join("status");
-                    if let Ok(status) = fs::read_to_string(&status_file) {
-                        let status = status.trim();
-                        if status == "Charging" || status == "Full" {
-                            battery_charging_or_full = true;
-                            log_message(&format!("Battery status: {} ({})", status, name));
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Primary method: AC adapter online
-        if ac_found {
-            return true;
-        }
-        
-        // Fallback: If no AC adapter found but battery is charging/full, assume on AC
-        // This helps with systems where AC detection is unreliable
-        if battery_charging_or_full {
-            log_message("No AC adapter detected, but battery is charging/full - assuming on AC");
-            return true;
-        }
-    }
-    
-    // Method 2: Fallback - check legacy AC paths with broader naming
-    let potential_ac_names = [
-        "AC", "ADP", "ACAD", "AC0", "ADP1", "ACPI0003", 
-        "ACPI0004", "ADP0", "AC1", "ACADAPTER"
-    ];
-    
-    if let Ok(entries) = fs::read_dir("/sys/class/power_supply/") {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let name_os = entry.file_name();
-            let name = name_os.to_string_lossy().to_string();
-            
-            // Check if name matches any known AC adapter patterns
-            if potential_ac_names.iter().any(|&ac_name| 
-                name.starts_with(ac_name) || name.contains(ac_name)) {
-                
-                let online_file = entry.path().join("online");
-                if let Ok(status) = fs::read_to_string(&online_file) {
-                    if status.trim() == "1" {
-                        log_message(&format!("Legacy AC detection found: {}", name));
-                        return true;
-                    }
-                }
-                }
-        }
-    }
-    
-    false
 }
 

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use crate::log::log_message; // assuming you have this
+use crate::log::{log_error_message, log_message}; // assuming you have this
 
 /// Represents brightness state as absolute value (not percent)
 #[derive(Clone, Debug)]
@@ -25,7 +25,7 @@ pub fn capture_brightness() -> Option<BrightnessState> {
 pub fn restore_brightness(state: &BrightnessState) {
     let path = format!("/sys/class/backlight/{}/brightness", state.device);
     if let Err(e) = fs::write(&path, state.value.to_string()) {
-        log_message(&format!(
+        log_error_message(&format!(
             "Warning: Failed to restore brightness at {}: {}. \
             You may need root privileges or a udev rule to write to this file.",
             path, e
