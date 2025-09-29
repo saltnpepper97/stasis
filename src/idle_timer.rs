@@ -380,6 +380,7 @@ impl IdleTimer {
             default_actions
         };
 
+        self.cfg = cfg.clone();
         self.is_idle_flags = vec![false; self.actions.len()];
         self.resume_command = cfg.resume_command.clone();
         self.pre_suspend_command = cfg.pre_suspend_command.clone();
