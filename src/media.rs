@@ -2,57 +2,49 @@ use std::{sync::Arc, time::Duration};
 use eyre::Result;
 use mpris::{PlayerFinder, PlaybackStatus};
 use tokio::{task, time};
-
 use crate::idle_timer::IdleTimer;
 use crate::log::{log_message, log_error_message};
 
-/// Setup MPRIS monitoring using a repeating Tokio-local task
-pub fn setup(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
-    let finder = PlayerFinder::new()?; // may return Error -> propagated
+/// Setup MPRIS monitoring using a Tokio task
+pub fn spawn_media_monitor(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
     let idle_timer_clone = Arc::clone(&idle_timer);
-    let interval = Duration::from_secs(1);
+    let interval = Duration::from_secs(2);
 
-    // Track if we already detected media playing
-    let mut media_playing = false;
-
-    task::spawn_local(async move {
+    task::spawn(async move {
         let mut ticker = time::interval(interval);
+        let mut media_playing = false;
+
         loop {
             ticker.tick().await;
 
-            let mut any_playing = false;
-
-            match finder.find_all() {
-                Ok(players) => {
-                    for player in players {
-                        if let Ok(status) = player.get_playback_status() {
-                            if status == PlaybackStatus::Playing {
-                                any_playing = true;
-                                break; // no need to check others
-                            }
-                        }
+            // Check media players fresh each tick
+            let any_playing = match PlayerFinder::new() {
+                Ok(finder) => match finder.find_all() {
+                    Ok(players) => players.iter().any(|player| {
+                        player.get_playback_status()
+                            .map(|s| s == PlaybackStatus::Playing)
+                            .unwrap_or(false)
+                    }),
+                    Err(e) => {
+                        log_error_message(&format!("MPRIS: failed to list players: {:?}", e));
+                        false
                     }
-                }
+                },
                 Err(e) => {
-                    log_error_message(&format!("MPRIS: failed to list players: {:?}", e));
+                    log_error_message(&format!("MPRIS: failed to create finder: {:?}", e));
+                    false
                 }
-            }
+            };
 
-            if any_playing {
-                if !media_playing {
-                    // Only log when playback starts
-                    log_message("Media playback detected, timers paused");
-                    let mut timer = idle_timer_clone.lock().await;
-                    timer.pause();
-                }
+            // Pause or resume idle timer based on media playback
+            let mut timer = idle_timer_clone.lock().await;
+            if any_playing && !media_playing {
+                log_message("Media playback detected, timers paused");
+                timer.pause();
                 media_playing = true;
-            } else {
-                if media_playing {
-                    // Playback just stopped
-                    log_message("Media playback stopped, timers resumed");
-                    let mut timer = idle_timer_clone.lock().await;
-                    timer.resume();
-                }
+            } else if !any_playing && media_playing {
+                log_message("Media playback stopped, timers resumed");
+                timer.resume();
                 media_playing = false;
             }
         }

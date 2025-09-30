@@ -1,165 +1,239 @@
-use std::{collections::HashSet, sync::Arc, time::{Duration, Instant}};
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use futures::future::BoxFuture;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use crate::config::{IdleAction, IdleActionKind, IdleConfig};
-use crate::log::{log_message, log_error_message};
+use crate::log::{log_error_message, log_message};
 use crate::brightness::{capture_brightness, restore_brightness, BrightnessState};
-use crate::power_detection::{detect_power_state_with_retry, is_on_ac_power};
+use crate::power_detection::{detect_initial_power_state, is_on_ac_power};
+
+const MAX_SPAWNED_TASKS: usize = 10;
 
 pub struct IdleTimer {
     pub cfg: IdleConfig,
     is_laptop: bool,
     last_activity: Instant,
-    actions: Vec<IdleAction>,         // currently active actions (AC/Battery)
-    #[allow(dead_code)]
-    ac_actions: Vec<IdleAction>,      // only OnAc actions
-    #[allow(dead_code)]
-    battery_actions: Vec<IdleAction>, // only OnBattery actions
+    pub debounce_until: Option<Instant>,
+    actions: Vec<IdleAction>,
+    ac_actions: Vec<IdleAction>,
+    battery_actions: Vec<IdleAction>,
     resume_command: Option<String>,
-    suspend_occurred: bool,
     pre_suspend_command: Option<String>,
     is_idle_flags: Vec<bool>,
     compositor_managed: bool,
     active_kinds: HashSet<String>,
     previous_brightness: Option<BrightnessState>,
     on_ac: bool,
-    paused: bool,
+    pub paused: bool,
+    suspend_occurred: bool,
+    spawned_tasks: Vec<JoinHandle<()>>,
+    idle_task_handle: Option<JoinHandle<()>>,
 }
 
 impl IdleTimer {
     pub fn new(cfg: &IdleConfig) -> Self {
-        let cfg_clone = cfg.clone();
-        // All normal idle actions
-        let default_actions = cfg
-            .actions
-            .iter()
-            .filter(|(k, _)| !k.starts_with("ac.") && !k.starts_with("battery."))
-            .map(|(_, v)| v.clone())
-            .collect::<Vec<_>>();
-
-        // Laptop AC/Battery actions
-        let ac_actions = cfg
-            .actions
-            .iter()
-            .filter(|(k, _)| k.starts_with("ac."))
-            .map(|(_, v)| v.clone())
-            .collect::<Vec<_>>();
-
-        let battery_actions = cfg
-            .actions
-            .iter()
-            .filter(|(k, _)| k.starts_with("battery."))
-            .map(|(_, v)| v.clone())
-            .collect::<Vec<_>>();
-
-        // Try to detect power state, with retries for boot scenarios       
         let is_laptop = crate::utils::is_laptop();
         let on_ac = if is_laptop {
-            detect_power_state_with_retry(is_laptop)
+            detect_initial_power_state(is_laptop)
         } else {
             log_message("Desktop detected, skipping AC/Battery detection");
             false
         };
 
-        
+        let default_actions: Vec<_> = cfg
+            .actions
+            .iter()
+            .filter(|(k, _)| !k.starts_with("ac.") && !k.starts_with("battery."))
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        let ac_actions: Vec<_> = cfg
+            .actions
+            .iter()
+            .filter(|(k, _)| k.starts_with("ac."))
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        let battery_actions: Vec<_> = cfg
+            .actions
+            .iter()
+            .filter(|(k, _)| k.starts_with("battery."))
+            .map(|(_, v)| v.clone())
+            .collect();
+
         let actions = if !ac_actions.is_empty() || !battery_actions.is_empty() {
-            if on_ac {
-                log_message("Initializing with AC power actions");
-                ac_actions.clone()
-            } else {
-                log_message("Initializing with battery power actions");
-                battery_actions.clone()
-            }
+            if on_ac { ac_actions.clone() } else { battery_actions.clone() }
         } else {
-            log_message("Initializing with default actions");
             default_actions.clone()
         };
 
-        let is_idle_flags = vec![false; actions.len()];
+        let actions_clone = actions.clone();
 
-        if is_laptop {
-            log_message(&format!("Laptop detected, on_ac: {}", on_ac));
-        }
-
-        let mut timer = Self {
-            cfg: cfg_clone,
+        let timer = Self {
+            cfg: cfg.clone(),
             is_laptop,
             last_activity: Instant::now(),
+            debounce_until: None,
             actions,
             ac_actions,
             battery_actions,
             resume_command: cfg.resume_command.clone(),
             pre_suspend_command: cfg.pre_suspend_command.clone(),
-            is_idle_flags,
+            is_idle_flags: vec![false; actions_clone.len()],
             compositor_managed: false,
             active_kinds: HashSet::new(),
             previous_brightness: None,
             on_ac,
             paused: false,
             suspend_occurred: false,
+            spawned_tasks: Vec::new(),
+            idle_task_handle: None,
         };
 
-        // Trigger all timeout=0 actions immediately during initialization
-        timer.trigger_instant_actions();
-        
         timer
+    }
+
+    pub async fn init(&mut self) {
+        self.trigger_instant_actions().await;
     }
 
     pub fn elapsed_idle(&self) -> Duration {
         Instant::now().duration_since(self.last_activity)
     }
 
-    /// Trigger all actions with timeout_seconds == 0 exactly once
-    fn trigger_instant_actions(&mut self) {
-        // Collect instant actions first to avoid borrow checker issues
-        let mut instant_actions = Vec::new();
-        for (i, action) in self.actions.iter().enumerate() {
-            if action.timeout_seconds == 0 && !self.is_idle_flags[i] {
-                instant_actions.push((i, action.clone()));
-            }
-        }
-
-        // Now process the instant actions
-        for (i, action) in instant_actions {
-            self.is_idle_flags[i] = true;
-            self.active_kinds.insert(action.kind.to_string());
-            
-            // Handle brightness capture for instant brightness actions
-            if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
-                if let Some(state) = capture_brightness() {
-                    self.previous_brightness = Some(state.clone());
-                    log_message(&format!("Captured current brightness: {} (device: {})", state.value, state.device));
-                } else {
-                    log_error_message("Could not capture current brightness");
+    pub fn trigger_instant_actions(&mut self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let mut instant_actions = Vec::new();
+            for (i, action) in self.actions.iter().enumerate() {
+                if action.timeout_seconds == 0 && !self.is_idle_flags[i] {
+                    instant_actions.push((i, action.clone()));
                 }
             }
-            
-            crate::actions::on_idle_timeout(&action, Some(self));
-        }
+
+            for (i, action) in instant_actions {
+                self.is_idle_flags[i] = true;
+                self.active_kinds.insert(action.kind.to_string());
+
+                if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
+                    if let Some(state) = capture_brightness() {
+                        self.previous_brightness = Some(state.clone());
+                    } else {
+                        log_error_message("Could not capture current brightness");
+                    }
+                }
+
+                // execute requests
+                let requests = crate::actions::prepare_action(&action).await;
+                for req in requests {
+                    match req {
+                        crate::actions::ActionRequest::PreSuspend => {
+                            self.trigger_pre_suspend(false, false).await;
+                        }
+                        crate::actions::ActionRequest::RunCommand(cmd) => {
+                            let cmd_clone = cmd.clone();
+                            self.spawn_task_limited(async move {
+                                if let Err(e) = crate::actions::run_command_silent(&cmd_clone).await {
+                                    log_error_message(&format!("Failed to run command '{}': {}", cmd_clone, e));
+                                }
+                            });
+                        }
+                        crate::actions::ActionRequest::Skip(_) => {}
+                    }
+                }
+            }
+        })
     }
-    
+
+    pub async fn check_idle(&mut self) {
+        if self.paused {
+            return;
+        }
+
+        // handle debounce first
+        if let Some(until) = self.debounce_until {
+            if Instant::now() >= until {
+                self.debounce_until = None;
+                self.apply_reset();
+            } else {
+                return; // still debouncing, skip idle checks
+            }
+        }
+
+        let elapsed = self.elapsed_idle();
+
+        for i in 0..self.actions.len() {
+            let action = &self.actions[i];
+            let key = action.kind.to_string();
+
+            if action.timeout_seconds == 0 || self.is_idle_flags[i] || self.active_kinds.contains(&key)
+            {
+                continue;
+            }
+
+            if elapsed >= Duration::from_secs(action.timeout_seconds) {
+                self.is_idle_flags[i] = true;
+                self.active_kinds.insert(key.clone());
+
+                if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
+                    if let Some(state) = capture_brightness() {
+                        self.previous_brightness = Some(state.clone());
+                    }
+                }
+
+                let requests = crate::actions::prepare_action(action).await;
+                for req in requests {
+                    match req {
+                        crate::actions::ActionRequest::PreSuspend => {
+                            self.trigger_pre_suspend(false, false).await;
+                        }
+                        crate::actions::ActionRequest::RunCommand(cmd) => {
+                            let cmd_clone = cmd.clone();
+                            self.spawn_task_limited(async move {
+                                if let Err(e) = crate::actions::run_command_silent(&cmd_clone).await {
+                                    log_error_message(&format!("Failed to run command '{}': {}", cmd_clone, e));
+                                }
+                            });
+                        }
+                        crate::actions::ActionRequest::Skip(_) => {}
+                    }
+                }
+
+            }
+        }
+
+        self.cleanup_tasks();
+    }
 
     pub fn reset(&mut self) {
+        let debounce_delay = Duration::from_secs(3);
+        self.debounce_until = Some(Instant::now() + debounce_delay);
+    }
+
+
+    fn apply_reset(&mut self) {
         let was_idle = self.is_idle_flags.iter().any(|&b| b);
         self.last_activity = Instant::now();
-        for flag in self.is_idle_flags.iter_mut() {
-            *flag = false;
-        }
+        self.cleanup_tasks();
+        self.is_idle_flags.fill(false);
 
         if was_idle {
-            // Restore brightness if saved
             if let Some(state) = &self.previous_brightness {
-                log_message(&format!("Restoring brightness to {} (device: {})", state.value, state.device));
                 restore_brightness(state);
             }
 
-            // Only run resume command if a suspend actually occurred
             if self.suspend_occurred {
                 if let Some(cmd) = &self.resume_command {
-                    log_message(&format!("Running resume command: {}", cmd));
-                    crate::actions::run_command_silent(cmd).ok();
+                    let cmd_clone = cmd.clone();
+                    self.spawn_task_limited(async move {
+                        let _ = crate::actions::run_command_silent(&cmd_clone).await;
+                    });
                 }
-                self.suspend_occurred = false; // reset flag after running
+                self.suspend_occurred = false;
             }
         }
 
@@ -167,116 +241,73 @@ impl IdleTimer {
         self.previous_brightness = None;
     }
 
-
-    /// Check which idle actions should trigger (excluding timeout=0 actions)
-    pub fn check_idle(&mut self) {
-        if self.paused {
-            return; // do nothing while paused
-        }
-        
-        let elapsed = Instant::now().duration_since(self.last_activity);
-
-        for i in 0..self.actions.len() {
-            let action = &self.actions[i];
-            let key = action.kind.to_string();
-
-            // Skip timeout=0 actions - they should only be triggered once during init or power change
-            if action.timeout_seconds == 0 {
-                continue;
-            }
-
-            if elapsed >= Duration::from_secs(action.timeout_seconds)
-                && !self.is_idle_flags[i]
-                && !self.active_kinds.contains(&key)
-            {
-                self.is_idle_flags[i] = true;
-                self.active_kinds.insert(key.clone());
-
-                log_message(&format!(
-                    "Idle action triggered: {} ({}s elapsed)",
-                    action.command,
-                    elapsed.as_secs()
-                ));
-
-                // Capture brightness only once
-                if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
-                    if let Some(state) = capture_brightness() {
-                        self.previous_brightness = Some(state.clone());
-                        log_message(&format!("Captured current brightness: {} (device: {})", state.value, state.device));
-                    } else {
-                        log_message("Warning: Could not capture current brightness");
-                    }
-                }
-
-                // Trigger the idle action
-                let action_clone = action.clone();
-                crate::actions::on_idle_timeout(&action_clone, Some(self));
-            }
+    pub fn spawn_task_limited<F>(&mut self, fut: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.cleanup_tasks();
+        if self.spawned_tasks.len() < MAX_SPAWNED_TASKS {
+            self.spawned_tasks.push(tokio::spawn(fut));
+        } else {
+            log_message("Max spawned tasks reached, skipping task spawn");
         }
     }
 
-    /// Switch actions when power source changes
-    pub fn update_power_source(&mut self, on_ac: bool) {
-        if !self.is_laptop {
-            return; // skip desktops entirely
-        }
-
-        if self.on_ac != on_ac {
-            log_message(&format!("Power source changed: {}", if on_ac { "AC" } else { "Battery" }));
-            self.on_ac = on_ac;
-
-            // Note: We're switching to a completely new action set, so we don't need to preserve flags
-
-            // Restore any saved brightness state before switching
-            if let Some(state) = self.previous_brightness.take() {
-                restore_brightness(&state);
-            }
-
-            // Switch the current idle actions
-            self.actions = if on_ac {
-                self.ac_actions.clone()
-            } else {
-                self.battery_actions.clone()
-            };
-
-            // Reset flags for new action set
-            self.is_idle_flags = vec![false; self.actions.len()];
-
-            // Clear active kinds to allow new actions
-            self.active_kinds.clear();
-            self.previous_brightness = None;
-
-            // Trigger instant actions (timeout=0) for the new power state exactly once
-            self.trigger_instant_actions();
-        }
+    fn cleanup_tasks(&mut self) {
+        self.spawned_tasks.retain(|h| !h.is_finished());
     }
 
-    /// Force all idle actions immediately
-    pub fn trigger_idle(&mut self) {
-        let elapsed_secs = Instant::now().duration_since(self.last_activity).as_secs();
+    pub async fn update_power_source(&mut self, on_ac: bool) {
+        if !self.is_laptop || self.on_ac == on_ac {
+            return;
+        }
 
+        self.on_ac = on_ac;
+        self.cleanup_tasks();
+
+        if let Some(state) = self.previous_brightness.take() {
+            restore_brightness(&state);
+        }
+
+        self.actions = if on_ac { self.ac_actions.clone() } else { self.battery_actions.clone() };
+        self.is_idle_flags = vec![false; self.actions.len()];
+        self.active_kinds.clear();
+        self.trigger_instant_actions().await;
+    }
+
+    pub async fn trigger_idle(&mut self) {
         for i in 0..self.actions.len() {
             if !self.is_idle_flags[i] {
                 self.is_idle_flags[i] = true;
-                let action = &self.actions[i];
+                let action = self.actions[i].clone();                
+                let requests = crate::actions::prepare_action(&action).await;
+                for req in requests {
+                    match req {
+                        crate::actions::ActionRequest::PreSuspend => {
+                            self.trigger_pre_suspend(false, false).await;
+                        }
+                        crate::actions::ActionRequest::RunCommand(cmd) => {
+                            let cmd_clone = cmd.clone();
+                            self.spawn_task_limited(async move {
+                                if let Err(e) = crate::actions::run_command_silent(&cmd_clone).await {
+                                    log_error_message(&format!("Failed to run command '{}': {}", cmd_clone, e));
+                                }
+                            });
+                        }
+                        crate::actions::ActionRequest::Skip(_) => {}
+                    }
+                }
 
-                log_message(&format!("Forced idle action: {} ({}s)", action.command, elapsed_secs));
-
-                let action_clone = action.clone();
-                crate::actions::on_idle_timeout(&action_clone, Some(self));
             }
         }
     }
 
-    /// Run pre-suspend command; optionally rewind timers for manual trigger
-    pub fn trigger_pre_suspend(&mut self, rewind_timers: bool, manual: bool) {
+    pub async fn trigger_pre_suspend(&mut self, rewind_timers: bool, manual: bool) {
         if !manual {
-            // Only mark that suspend is pending if this is an idle-timer-triggered pre-suspend
-            self.suspend_occurred = true; // will trigger resume_command later
+            self.suspend_occurred = true;
         }
 
         if let Some(cmd) = &self.pre_suspend_command {
-            log_message(&format!("Running pre-suspend command: {}", cmd));
             if let Err(e) = run_pre_suspend_sync(cmd) {
                 log_message(&format!("Pre-suspend command failed: {}", e));
             }
@@ -285,50 +316,38 @@ impl IdleTimer {
                 self.last_activity = Instant::now();
                 self.is_idle_flags.iter_mut().for_each(|f| *f = false);
                 self.active_kinds.clear();
-                self.trigger_instant_actions(); 
-                log_message("Idle timer rewound to first action after manual pre-suspend");
-            } else {
-                let elapsed = Instant::now().duration_since(self.last_activity);
-                log_message(&format!("Pre-suspend executed, timer state preserved ({}s elapsed)", elapsed.as_secs()));
+                self.trigger_instant_actions().await;
             }
-        } else if manual {
-            log_message("Manual pre-suspend triggered, but no pre_suspend_command defined");
         }
     }
 
     pub fn pause(&mut self) {
-        if !self.paused {
-            self.paused = true;
-        }
+        self.paused = true;
     }
 
     pub fn resume(&mut self) {
         if self.paused {
             self.paused = false;
-            // Reset timer state but don't re-trigger instant actions
             let was_idle = self.is_idle_flags.iter().any(|&b| b);
             self.last_activity = Instant::now();
-            for flag in self.is_idle_flags.iter_mut() {
-                *flag = false;
-            }
+            self.cleanup_tasks();
+            self.is_idle_flags.fill(false);
 
             if was_idle {
-                // Restore brightness if saved
                 if let Some(state) = &self.previous_brightness {
-                    log_message(&format!("Restoring brightness to {} (device: {})", state.value, state.device));
                     restore_brightness(state);
                 }
 
-                // Global resume command (user-defined)
                 if let Some(cmd) = &self.resume_command {
-                    log_message(&format!("Running resume command: {}", cmd));
-                    crate::actions::run_command_silent(cmd).ok();
+                    let cmd_clone = cmd.clone();
+                    self.spawn_task_limited(async move {
+                        let _ = crate::actions::run_command_silent(&cmd_clone).await;
+                    });
                 }
             }
 
             self.active_kinds.clear();
             self.previous_brightness = None;
-            
         }
     }
 
@@ -341,31 +360,38 @@ impl IdleTimer {
     }
 
     pub fn shortest_timeout(&self) -> Duration {
-        self.actions.iter()
-            .filter(|a| a.timeout_seconds > 0) // Exclude timeout=0 actions from shortest timeout calculation
+        self.actions
+            .iter()
+            .filter(|a| a.timeout_seconds > 0)
             .map(|a| Duration::from_secs(a.timeout_seconds))
             .min()
             .unwrap_or_else(|| Duration::from_secs(60))
     }
 
     pub fn mark_all_idle(&mut self) {
-        for flag in self.is_idle_flags.iter_mut() {
-            *flag = true;
-        }
+        self.is_idle_flags.fill(true);
     }
 
-    pub fn update_from_config(&mut self, cfg: &IdleConfig) {
-        let default_actions: Vec<_> = cfg.actions.iter()
+    pub async fn update_from_config(&mut self, cfg: &IdleConfig) {
+        self.cleanup_tasks();
+
+        let default_actions: Vec<_> = cfg
+            .actions
+            .iter()
             .filter(|(k, _)| !k.starts_with("ac.") && !k.starts_with("battery."))
             .map(|(_, v)| v.clone())
             .collect();
 
-        self.ac_actions = cfg.actions.iter()
+        self.ac_actions = cfg
+            .actions
+            .iter()
             .filter(|(k, _)| k.starts_with("ac."))
             .map(|(_, v)| v.clone())
             .collect();
 
-        self.battery_actions = cfg.actions.iter()
+        self.battery_actions = cfg
+            .actions
+            .iter()
             .filter(|(k, _)| k.starts_with("battery."))
             .map(|(_, v)| v.clone())
             .collect();
@@ -388,42 +414,29 @@ impl IdleTimer {
         self.active_kinds.clear();
         self.previous_brightness = None;
 
-        // Trigger instant actions after config reload
-        self.trigger_instant_actions();
-
+        self.trigger_instant_actions().await;
         log_message("Idle timers reloaded from config");
     }
 
-    /// Debug method to show current timer state
-    #[allow(dead_code)]
-    pub fn debug_timer_state(&self) {
-        let elapsed = Instant::now().duration_since(self.last_activity);
-        log_message(&format!("Current elapsed time: {}s", elapsed.as_secs()));
-        
-        for (i, action) in self.actions.iter().enumerate() {
-            let status = if self.is_idle_flags[i] {
-                "TRIGGERED"
-            } else if action.timeout_seconds == 0 {
-                "INSTANT"
-            } else if elapsed >= Duration::from_secs(action.timeout_seconds) {
-                "READY"
-            } else {
-                "WAITING"
-            };
-            log_message(&format!("  Action {}: {} ({}s) - {}", i, action.command, action.timeout_seconds, status));
+    pub async fn shutdown(&mut self) {
+        if let Some(handle) = self.idle_task_handle.take() {
+            handle.abort();
+        }
+
+        for handle in self.spawned_tasks.drain(..) {
+            handle.abort();
         }
     }
 }
 
-/// Synchronously run pre-suspend command with 5s timeout
 fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
     use std::time::{Duration, Instant};
-    
+
     let mut child = Command::new("sh").arg("-c").arg(cmd).spawn()?;
     let timeout = Duration::from_secs(5);
     let start = Instant::now();
-    
+
     loop {
         if let Some(status) = child.try_wait()? {
             if !status.success() {
@@ -439,43 +452,29 @@ fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Spawn Tokio task to monitor idle/user activity
-pub fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) {
+/// Spawn main idle monitor task
+pub async fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_millis(500));
-        let mut last_ac_check = Instant::now() - Duration::from_secs(10); // force first check
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
         let mut last_power_state = {
             let timer = idle_timer.lock().await;
-            if timer.is_laptop { Some(timer.on_ac) } else { Some(true) }
+            Some(timer.on_ac)
         };
-
-        tokio::time::sleep(Duration::from_millis(1000)).await; // startup delay
 
         loop {
             ticker.tick().await;
             let mut timer = idle_timer.lock().await;
 
-            // --- check AC/Battery every 10 seconds ---
-            if timer.is_laptop && last_ac_check.elapsed() >= Duration::from_secs(10) {
-                let on_ac = is_on_ac_power(timer.is_laptop);
+            if timer.is_laptop {
+                let on_ac = is_on_ac_power(true);
                 if last_power_state != Some(on_ac) {
-                    log_message(&format!("Power state change detected: {} -> {}", 
-                        match last_power_state {
-                            Some(true) => "AC",
-                            Some(false) => "Battery",
-                            None => "Unknown"
-                        },
-                        if on_ac { "AC" } else { "Battery" }
-                    ));
-                    timer.update_power_source(on_ac);
+                    timer.update_power_source(on_ac).await;
                     last_power_state = Some(on_ac);
                 }
-                last_ac_check = Instant::now();
             }
 
-            // --- check idle every tick ---
-            timer.check_idle();
+            timer.check_idle().await;
         }
-    });
+    })
 }
 

@@ -93,3 +93,4 @@ pub fn log_error_message(message: &str) {
         eprintln!("{}", &error_msg);
     }
 }
+

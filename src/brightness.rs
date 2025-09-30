@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+
 use crate::log::{log_error_message, log_message}; // assuming you have this
 
 /// Represents brightness state as absolute value (not percent)

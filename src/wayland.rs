@@ -1,9 +1,12 @@
 use eyre::Result;
 use std::sync::Arc;
-use tokio::time::sleep;
 use std::time::Duration;
 
+use crate::idle_timer::IdleTimer;
 use crate::log::{log_error_message, log_message};
+
+use tokio::sync::Notify;
+use tokio::time::sleep;
 
 use wayland_client::{
     protocol::{wl_registry, wl_seat::WlSeat},
@@ -18,9 +21,7 @@ use wayland_protocols::wp::idle_inhibit::zv1::client::{
     zwp_idle_inhibitor_v1::{ZwpIdleInhibitorV1, Event as InhibitorEvent},
 };
 
-use crate::idle_timer::IdleTimer;
-
-/// Wayland idle state
+/// Holds Wayland idle state and handles integration with IdleTimer
 pub struct WaylandIdleData {
     pub idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
     pub idle_notifier: Option<ExtIdleNotifierV1>,
@@ -29,6 +30,7 @@ pub struct WaylandIdleData {
     pub inhibit_manager: Option<ZwpIdleInhibitManagerV1>,
     pub active_inhibitors: u32,
     pub respect_inhibitors: bool,
+    pub shutdown: Arc<Notify>,
 }
 
 impl WaylandIdleData {
@@ -41,6 +43,7 @@ impl WaylandIdleData {
             inhibit_manager: None,
             active_inhibitors: 0,
             respect_inhibitors,
+            shutdown: Arc::new(Notify::new()),
         }
     }
 
@@ -49,7 +52,7 @@ impl WaylandIdleData {
     }
 }
 
-/// Registry events: bind to protocols we need
+/// Bind registry globals
 impl Dispatch<wl_registry::WlRegistry, ()> for WaylandIdleData {
     fn event(
         state: &mut Self,
@@ -60,7 +63,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandIdleData {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global { name, interface, .. } = event {
-            match &interface[..] {
+            match interface.as_str() {
                 "ext_idle_notifier_v1" => {
                     state.idle_notifier =
                         Some(registry.bind::<ExtIdleNotifierV1, _, _>(name, 1, qh, ()));
@@ -81,7 +84,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandIdleData {
     }
 }
 
-/// ExtIdleNotifier events are ignored
 impl Dispatch<ExtIdleNotifierV1, ()> for WaylandIdleData {
     fn event(
         _: &mut Self,
@@ -93,7 +95,6 @@ impl Dispatch<ExtIdleNotifierV1, ()> for WaylandIdleData {
     ) {}
 }
 
-/// ExtIdleNotification events: update IdleTimer
 impl Dispatch<ExtIdleNotificationV1, ()> for WaylandIdleData {
     fn event(
         state: &mut Self,
@@ -113,7 +114,6 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandIdleData {
             }
 
             let mut timer = idle_timer.lock().await;
-
             if timer.is_compositor_managed() {
                 return;
             }
@@ -121,9 +121,8 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandIdleData {
             match event {
                 IdleEvent::Idled => {
                     log_message("Compositor detected idle state");
-                    let mut timer = idle_timer.lock().await;
                     timer.mark_all_idle();
-                    timer.trigger_idle();
+                    timer.trigger_idle().await;
                 }
                 IdleEvent::Resumed => {
                     log_message("Compositor detected activity");
@@ -135,7 +134,6 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandIdleData {
     }
 }
 
-/// ZwpIdleInhibitor events: increment counter
 impl Dispatch<ZwpIdleInhibitorV1, ()> for WaylandIdleData {
     fn event(
         state: &mut Self,
@@ -150,7 +148,6 @@ impl Dispatch<ZwpIdleInhibitorV1, ()> for WaylandIdleData {
     }
 }
 
-/// ZwpIdleInhibitManager events: decrement counter
 impl Dispatch<ZwpIdleInhibitManagerV1, ()> for WaylandIdleData {
     fn event(
         state: &mut Self,
@@ -167,7 +164,6 @@ impl Dispatch<ZwpIdleInhibitManagerV1, ()> for WaylandIdleData {
     }
 }
 
-/// WlSeat events: ignore
 impl Dispatch<WlSeat, ()> for WaylandIdleData {
     fn event(
         _: &mut Self,
@@ -183,11 +179,8 @@ impl Dispatch<WlSeat, ()> for WaylandIdleData {
 pub async fn setup(
     idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
     respect_inhibitors: bool,
-) -> Result<()> {
-    log_message(
-        &format!("Setting up Wayland idle detection (respect_inhibitors={})",
-        respect_inhibitors)
-    );
+) -> Result<Arc<tokio::sync::Mutex<WaylandIdleData>>> {
+    log_message(&format!("Setting up Wayland idle detection (respect_inhibitors={})", respect_inhibitors));
 
     let conn = Connection::connect_to_env()
         .map_err(|e| eyre::eyre!("Failed to connect to Wayland: {}", e))?;
@@ -200,12 +193,10 @@ pub async fn setup(
     event_queue.roundtrip(&mut app_data)?;
 
     if let (Some(notifier), Some(seat)) = (&app_data.idle_notifier, &app_data.seat) {
-        // Pick the shortest timeout from all idle actions for Wayland notification
         let timeout_ms = {
             let timer = idle_timer.lock().await;
             timer.shortest_timeout().as_millis() as u32
         };
-
         let notification = notifier.get_idle_notification(timeout_ms, seat, &qh, ());
         app_data.notification = Some(notification);
 
@@ -214,16 +205,35 @@ pub async fn setup(
         log_message("Wayland idle detection active");
     }
 
-    // Spawn async Wayland event loop
-    tokio::spawn(async move {
-        loop {
-            match event_queue.dispatch_pending(&mut app_data) {
-                Ok(_) => {}
-                Err(e) => log_error_message(&format!("Wayland event error: {}", e)),
+    let app_data = Arc::new(tokio::sync::Mutex::new(app_data));
+    let shutdown = {
+        let locked = app_data.lock().await;
+        Arc::clone(&locked.shutdown)
+    };
+
+    // Event loop task
+    tokio::spawn({
+        let app_data = Arc::clone(&app_data);
+        async move {
+            loop {
+                {
+                    let mut locked_data = app_data.lock().await;
+                    if let Err(e) = event_queue.dispatch_pending(&mut *locked_data) {
+                        log_error_message(&format!("Wayland event error: {}", e));
+                    }
+                }
+
+                tokio::select! {
+                    _ = shutdown.notified() => {
+                        log_message("Wayland event loop shutting down");
+                        break;
+                    }
+                    _ = sleep(Duration::from_millis(50)) => {}
+                }
             }
-            sleep(Duration::from_millis(50)).await;
         }
     });
 
-    Ok(())
+    Ok(app_data)
 }
+

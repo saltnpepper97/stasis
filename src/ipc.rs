@@ -4,8 +4,10 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use crate::{config, idle_timer::IdleTimer, log::{log_message, log_error_message}};
 
+use crate::SOCKET_PATH;
+
 /// Spawn the control socket task using a pre-bound listener
-pub fn spawn_control_socket_with_listener(
+pub async fn spawn_control_socket_with_listener(
     idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
     cfg_path: String,
     listener: UnixListener,
@@ -24,7 +26,7 @@ pub fn spawn_control_socket_with_listener(
                             match config::load_config(&cfg_path) {
                                 Ok(new_cfg) => {
                                     let mut timer = idle_timer.lock().await;
-                                    timer.update_from_config(&new_cfg);
+                                    timer.update_from_config(&new_cfg).await;
                                     log_message("Config reloaded successfully");
                                 }
                                 Err(_) => {
@@ -44,25 +46,45 @@ pub fn spawn_control_socket_with_listener(
                         }
                         "trigger_idle" => {
                             let mut timer = idle_timer.lock().await;
-                            timer.trigger_idle();
+                            timer.trigger_idle().await;
                             log_message("Forced idle actions triggered");
                         }
                         "trigger_presuspend" => {
                             let mut timer = idle_timer.lock().await;
-                            timer.trigger_pre_suspend(false, true);
+                            timer.trigger_pre_suspend(false, true).await;
                             log_message("Pre-suspend command triggered");
                         }
                         "stop" => {
-                            log_message("Received stop command, shutting down");
-                            std::process::exit(0);
+                            log_message("Received stop command, shutting down gracefully");
+
+                            let idle_timer_clone = Arc::clone(&idle_timer);
+                            tokio::spawn(async move {
+                                let mut timer = idle_timer_clone.lock().await;
+                                timer.shutdown().await;
+                                log_message("IdleTimer shutdown complete, exiting process");
+
+                                // Cleanup socket file before exit
+                                let _ = std::fs::remove_file(SOCKET_PATH);
+
+                                std::process::exit(0);
+                            });
                         }
-                        "stats" => {
+
+                        "info" => {
                             let idle = idle_timer.lock().await;
-                            let stats = format!(
-                                "Idle time: {:.2?}\n\n{}",
-                                idle.elapsed_idle(),
-                                idle.cfg.pretty_print() // Assuming you store the config in IdleTimer or pass it here
-                            );
+                            let active_time = idle.elapsed_idle();
+                            let idle_inhibited = idle.paused;
+
+                            // Start with the pretty-printed config
+                            let mut stats = idle.cfg.pretty_print();
+
+                            // Append runtime info at the end
+                            stats.push_str(&format!(
+                                "\nActive time    : {:.2?}\nIdle inhibited : {}\n",
+                                active_time,
+                                idle_inhibited
+                            ));
+
                             if let Err(e) = stream.write_all(stats.as_bytes()).await {
                                 log_error_message(&format!("Failed to send stats: {e}"));
                             }

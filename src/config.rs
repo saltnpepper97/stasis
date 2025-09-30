@@ -313,3 +313,4 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
         inhibit_apps,
     })
 }
+

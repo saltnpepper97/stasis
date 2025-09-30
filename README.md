@@ -81,7 +81,7 @@ install -Dm755 target/release/stasis ~/.local/bin/stasis
 
 ## Getting started
 
-Visit the [wiki](https://github.com/saltnpepper97/stasis/wiki)
+### Visit the [wiki](https://github.com/saltnpepper97/stasis/wiki)
 
 ## About RUNE
 
