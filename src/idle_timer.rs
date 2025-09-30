@@ -125,6 +125,11 @@ impl IdleTimer {
                 self.is_idle_flags[i] = true;
                 self.active_kinds.insert(action.kind.to_string());
 
+                 log_message(&format!(
+                    "Instant action triggered: kind={} command=\"{}\"",
+                    action.kind, action.command
+                ));
+
                 if action.kind == IdleActionKind::Brightness && self.previous_brightness.is_none() {
                     if let Some(state) = capture_brightness() {
                         self.previous_brightness = Some(state.clone());
