@@ -72,16 +72,18 @@ pub async fn spawn_control_socket_with_listener(
 
                         "info" => {
                             let idle = idle_timer.lock().await;
-                            let active_time = idle.elapsed_idle();
+                            let idle_time = idle.elapsed_idle();
                             let idle_inhibited = idle.paused;
+                            let uptime = idle.last_activity.elapsed() + idle_time;
 
                             // Start with the pretty-printed config
                             let mut stats = idle.cfg.pretty_print();
 
                             // Append runtime info at the end
                             stats.push_str(&format!(
-                                "\nActive time    : {:.2?}\nIdle inhibited : {}\n",
-                                active_time,
+                                "\nIdle time      : {:.2?}\nUptime         : {:.2?}\nIdle inhibited : {}\n",
+                                idle_time,
+                                uptime,
                                 idle_inhibited
                             ));
 
@@ -99,4 +101,3 @@ pub async fn spawn_control_socket_with_listener(
         }
     });
 }
-

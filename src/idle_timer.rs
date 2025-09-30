@@ -17,7 +17,7 @@ const MAX_SPAWNED_TASKS: usize = 10;
 pub struct IdleTimer {
     pub cfg: IdleConfig,
     is_laptop: bool,
-    last_activity: Instant,
+    pub last_activity: Instant,
     pub debounce_until: Option<Instant>,
     actions: Vec<IdleAction>,
     ac_actions: Vec<IdleAction>,
@@ -103,6 +103,12 @@ impl IdleTimer {
     }
 
     pub fn elapsed_idle(&self) -> Duration {
+        if let Some(until) = self.debounce_until {
+            if Instant::now() < until {
+                // still in debounce → report 0
+                return Duration::ZERO;
+            }
+        }
         Instant::now().duration_since(self.last_activity)
     }
 
@@ -212,9 +218,6 @@ impl IdleTimer {
     pub fn reset(&mut self) {
         let debounce_delay = Duration::from_secs(3);
         self.debounce_until = Some(Instant::now() + debounce_delay);
-
-        // Update last activity immediately
-        self.last_activity = Instant::now();
     }
 
 
