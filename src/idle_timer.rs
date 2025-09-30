@@ -212,6 +212,9 @@ impl IdleTimer {
     pub fn reset(&mut self) {
         let debounce_delay = Duration::from_secs(3);
         self.debounce_until = Some(Instant::now() + debounce_delay);
+
+        // Update last activity immediately
+        self.last_activity = Instant::now();
     }
 
 
