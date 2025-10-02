@@ -5,7 +5,6 @@ use tokio::process::Command;
 use crate::config::{IdleAction, IdleActionKind};
 use crate::log::log_message;
 
-/// A small instruction set telling the IdleTimer what to do next.
 #[derive(Debug, Clone)]
 pub enum ActionRequest {
     RunCommand(String),
@@ -14,15 +13,12 @@ pub enum ActionRequest {
     Skip(String),
 }
 
-/// Decide what to do when an idle action triggers.
 pub async fn prepare_action(action: &IdleAction) -> Vec<ActionRequest> {
     let cmd = action.command.clone();
     let kind = action.kind.clone();
 
     match kind {
         IdleActionKind::Suspend => {
-            // Let the Timer handle the pre-suspend (so it can manage timers/flags).
-            // If there's also a suspend command, return a RunCommand too.
             let mut reqs = Vec::new();
             reqs.push(ActionRequest::PreSuspend);
             if !cmd.trim().is_empty() {
@@ -32,7 +28,6 @@ pub async fn prepare_action(action: &IdleAction) -> Vec<ActionRequest> {
         }
 
         IdleActionKind::LockScreen => {
-            // If lockscreen's process is already running, skip running it again.
             // TODO: Might Change this in the future
             if is_process_running(&cmd).await {
                 log_message("Lockscreen already running, skipping action.");

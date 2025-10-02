@@ -138,7 +138,6 @@ impl IdleTimer {
                     }
                 }
 
-                // execute requests
                 let requests = crate::actions::prepare_action(&action).await;
                 for req in requests {
                     match req {
