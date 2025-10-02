@@ -14,3 +14,19 @@ pub fn is_laptop() -> bool {
     }
 }
 
+pub fn format_duration(dur: std::time::Duration) -> String {
+    let secs = dur.as_secs();
+
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        let minutes = secs / 60;
+        let seconds = secs % 60;
+        format!("{}m {}s", minutes, seconds)
+    } else {
+        let hours = secs / 3600;
+        let minutes = (secs % 3600) / 60;
+        format!("{}h {}m", hours, minutes)
+    }
+}
+

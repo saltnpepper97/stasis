@@ -2,8 +2,9 @@ use std::sync::Arc;
 use tokio::net::UnixListener;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use crate::{config, idle_timer::IdleTimer, log::{log_message, log_error_message}};
 
+use crate::{config, idle_timer::IdleTimer, log::{log_message, log_error_message}};
+use crate::utils::format_duration;
 use crate::SOCKET_PATH;
 
 /// Spawn the control socket task using a pre-bound listener
@@ -81,9 +82,9 @@ pub async fn spawn_control_socket_with_listener(
 
                             // Append runtime info at the end
                             stats.push_str(&format!(
-                                "\nIdle time      : {:.2?}\nUptime         : {:.2?}\nIdle inhibited : {}\n",
-                                idle_time,
-                                uptime,
+                                "\nIdle time      : {}\nUptime         : {}\nIdle inhibited : {}\n",
+                                format_duration(idle_time),
+                                format_duration(uptime),
                                 idle_inhibited
                             ));
 

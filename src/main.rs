@@ -42,12 +42,25 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    #[command(about = "Reload the configuration without restarting")]
     Reload,
+
+    #[command(about = "Pause all idle timers")]
     Pause,
+
+    #[command(about = "Resume idle timers after a pause")]
     Resume,
+
+    #[command(about = "Manually trigger idle actions")]
     TriggerIdle,
+
+    #[command(about = "Trigger pre-suspend action manually")]
     TriggerPreSuspend,
+
+    #[command(about = "Stop the currently running instances of Stasis")]
     Stop,
+
+    #[command(about = "Display current session information")]
     Info,
 }
 
