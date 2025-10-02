@@ -165,23 +165,13 @@ impl IdleTimer {
             return;
         }
 
-        // --- Step 1: Handle debounce after activity ---
+        // handle debounce first
         if let Some(until) = self.debounce_until {
-            if Instant::now() < until {
+            if Instant::now() >= until {
+                self.debounce_until = None;
                 self.apply_reset();
-                return;
             } else {
-                // debounce expired
-                self.debounce_until = None;
-            }
-        }
-
-        // --- Step 2: Only check idle timers if debounce expired ---
-        if let Some(until) = self.debounce_until {
-            if Instant::now() < until {
-                return; // still debouncing timeout-based checks
-            } else {
-                self.debounce_until = None;
+                return; // still debouncing, skip idle checks
             }
         }
 

@@ -21,7 +21,7 @@ idle:
   # Desktop-only idle actions
   lock_screen:
     timeout = 300
-    command "brightnessctl set 10% && sleep 0.2 && swaylock"
+    command "swaylock"
   end
 
   suspend:
@@ -38,7 +38,7 @@ idle:
   on_ac:
 
     lock_screen:
-      command "brightnessctl set 20% && sleep 0.2 && swaylock"
+      command "swaylock"
       timeout 300
     end
 
@@ -67,7 +67,7 @@ idle:
   on_battery:
 
     lock_screen:
-      command "brightnessctl set 10% && sleep 0.2 && swaylock"
+      command "swaylock"
       timeout 300
     end
 
@@ -78,7 +78,7 @@ idle:
 
     brightness:
       command "brightnessctl set 30%"
-      timeout 0
+      timeout 300
     end
 
     suspend:
