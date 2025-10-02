@@ -16,6 +16,7 @@ mod config;
 mod idle_timer;
 mod input;
 mod ipc;
+mod lid;
 mod log;
 mod media;
 mod power_detection;
@@ -134,6 +135,14 @@ async fn main() -> Result<()> {
     // --- Spawn background tasks ---
     idle_timer::spawn_idle_task(Arc::clone(&idle_timer)).await;
     input::spawn_input_task(Arc::clone(&idle_timer));
+
+    // --- Spawn lid event listener ---
+    let lid_idle_timer = Arc::clone(&idle_timer);
+    tokio::spawn(async move {
+        if let Err(e) = lid::listen_for_lid_events(lid_idle_timer).await {
+            log_error_message(&format!("Lid event listener failed: {}", e));
+        }
+    });
 
     let app_inhibitor = app_inhibit::spawn_app_inhibit_task(
         Arc::clone(&idle_timer),
