@@ -75,7 +75,7 @@ pub async fn spawn_control_socket_with_listener(
                             let idle = idle_timer.lock().await;
                             let idle_time = idle.elapsed_idle();
                             let idle_inhibited = idle.paused;
-                            let uptime = idle.last_activity.elapsed() + idle_time;
+                            let uptime = idle.start_time.elapsed();
 
                             // Start with the pretty-printed config
                             let mut stats = idle.cfg.pretty_print();

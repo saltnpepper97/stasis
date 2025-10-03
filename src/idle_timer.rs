@@ -16,6 +16,7 @@ const MAX_SPAWNED_TASKS: usize = 10;
 
 pub struct IdleTimer {
     pub cfg: IdleConfig,
+    pub start_time: Instant,
     pub last_activity: Instant,
     pub debounce_until: Option<Instant>,
     pub paused: bool,
@@ -73,11 +74,13 @@ impl IdleTimer {
         };
 
         let actions_clone = actions.clone();
-
+        let now = Instant::now();
+        
         let timer = Self {
             cfg: cfg.clone(),
             is_laptop,
-            last_activity: Instant::now(),
+            start_time: now,
+            last_activity: now,
             debounce_until: None,
             actions,
             ac_actions,
