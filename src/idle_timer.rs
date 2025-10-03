@@ -166,11 +166,10 @@ impl IdleTimer {
 
         // handle debounce first
         if let Some(until) = self.debounce_until {
-            if Instant::now() >= until {
-                self.debounce_until = None;
-                self.apply_reset();
-            } else {
+            if Instant::now() < until {
                 return; // still debouncing, skip idle checks
+            } else {
+                self.debounce_until = None;
             }
         }
 
@@ -220,6 +219,9 @@ impl IdleTimer {
     }
 
     pub fn reset(&mut self) {
+        self.last_activity = Instant::now();
+        self.apply_reset();
+
         let debounce_delay = Duration::from_secs(3);
         self.debounce_until = Some(Instant::now() + debounce_delay);
     }
@@ -351,6 +353,7 @@ impl IdleTimer {
                 if let Some(cmd) = &self.resume_command {
                     let cmd_clone = cmd.clone();
                     self.spawn_task_limited(async move {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                         let _ = crate::actions::run_command_silent(&cmd_clone).await;
                     });
                 }
