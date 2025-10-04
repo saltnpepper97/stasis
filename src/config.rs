@@ -58,34 +58,61 @@ pub struct IdleConfig {
 }
 
 impl IdleConfig {
-    pub fn pretty_print(&self) -> String {
-        let mut output = String::new();
+    /// Pretty-print config, optionally including runtime info
+    pub fn pretty_print(
+        &self,
+        idle_time: Option<std::time::Duration>,
+        uptime: Option<std::time::Duration>,
+        is_inhibited: Option<bool>,
+    ) -> String {
+        let mut out = String::new();
 
-        output.push_str("=== Stasis Configuration ===\n\n");
-
-        output.push_str("General Settings:\n");
-        output.push_str(&format!(
-            "  Resume command      : {}\n",
-            self.resume_command.as_deref().unwrap_or("None")
+        // General settings
+        out.push_str("General:\n");
+        out.push_str(&format!(
+            "  ResumeCommand      = {}\n",
+            self.resume_command.as_deref().unwrap_or("-")
         ));
-        output.push_str(&format!(
-            "  Pre-suspend command : {}\n",
-            self.pre_suspend_command.as_deref().unwrap_or("None")
+        out.push_str(&format!(
+            "  PreSuspendCommand  = {}\n",
+            self.pre_suspend_command.as_deref().unwrap_or("-")
         ));
-        output.push_str(&format!("  Monitor media       : {}\n", self.monitor_media));
-        output.push_str(&format!("  Respect inhibitors  : {}\n", self.respect_idle_inhibitors));
+        out.push_str(&format!(
+            "  MonitorMedia       = {}\n",
+            if self.monitor_media { "true" } else { "false" }
+        ));
+        out.push_str(&format!(
+            "  RespectInhibitors  = {}\n",
+            if self.respect_idle_inhibitors { "true" } else { "false" }
+        ));
 
-        output.push_str("  Inhibited Apps      : ");
-        if self.inhibit_apps.is_empty() {
-            output.push_str("None\n");
+        let apps = if self.inhibit_apps.is_empty() {
+            "-".to_string()
         } else {
-            let app_list: Vec<String> = self.inhibit_apps.iter().map(|p| p.to_string()).collect();
-            output.push_str(&format!("{}\n", app_list.join(", ")));
+            self.inhibit_apps
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        out.push_str(&format!("  InhibitApps        = {}\n", apps));
+
+        // Optional runtime info
+        if let Some(idle) = idle_time {
+            out.push_str(&format!("  IdleTime           = {}\n", crate::utils::format_duration(idle)));
         }
+        if let Some(up) = uptime {
+            out.push_str(&format!("  Uptime             = {}\n", crate::utils::format_duration(up)));
+        }
+        if let Some(inhibited) = is_inhibited {
+            out.push_str(&format!("  IdleInhibited      = {}\n", inhibited));
+        }
+
+        // Actions
+        out.push_str("\nActions:\n");
 
         let mut grouped: std::collections::BTreeMap<&str, Vec<(&String, &IdleAction)>> =
             std::collections::BTreeMap::new();
-
         for (key, action) in &self.actions {
             let prefix = if key.starts_with("ac.") {
                 "AC"
@@ -97,17 +124,15 @@ impl IdleConfig {
             grouped.entry(prefix).or_default().push((key, action));
         }
 
-        output.push_str("\nIdle Actions:\n");
-
         for (group, actions) in grouped {
-            output.push_str(&format!("  [{}]\n", group));
+            out.push_str(&format!("  [{}]\n", group));
 
             let mut sorted = actions.clone();
             sorted.sort_by(|a, b| a.0.cmp(b.0));
 
             for (key, action) in sorted {
-                output.push_str(&format!(
-                    "    {:<22} | timeout: {:>5}s | kind: {:<12} | command: {}\n",
+                out.push_str(&format!(
+                    "    {:<20} Timeout={} Kind={} Command=\"{}\"\n",
                     key,
                     action.timeout_seconds,
                     action.kind,
@@ -116,7 +141,7 @@ impl IdleConfig {
             }
         }
 
-        output
+        out
     }
 }
 

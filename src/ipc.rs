@@ -4,7 +4,6 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
 use crate::{config, idle_timer::IdleTimer, log::{log_message, log_error_message}};
-use crate::utils::format_duration;
 use crate::SOCKET_PATH;
 
 /// Spawn the control socket task using a pre-bound listener
@@ -70,29 +69,23 @@ pub async fn spawn_control_socket_with_listener(
                                 std::process::exit(0);
                             });
                         }
-
                         "info" => {
                             let idle = idle_timer.lock().await;
                             let idle_time = idle.elapsed_idle();
                             let idle_inhibited = idle.paused;
                             let uptime = idle.start_time.elapsed();
 
-                            // Start with the pretty-printed config
-                            let mut stats = idle.cfg.pretty_print();
-
-                            // Append runtime info at the end
-                            stats.push_str(&format!(
-                                "\nIdle time      : {}\nUptime         : {}\nIdle inhibited : {}\n",
-                                format_duration(idle_time),
-                                format_duration(uptime),
-                                idle_inhibited
-                            ));
+                            // Pass runtime info into pretty_print
+                            let stats = idle.cfg.pretty_print(
+                                Some(idle_time),
+                                Some(uptime),
+                                Some(idle_inhibited),
+                            );
 
                             if let Err(e) = stream.write_all(stats.as_bytes()).await {
                                 log_error_message(&format!("Failed to send stats: {e}"));
                             }
                         }
-
                         _ => {
                             log_error_message(&format!("Unknown control command: {}", cmd));
                         }

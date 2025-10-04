@@ -1243,12 +1243,14 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 
 [[package]]
 name = "rune-cfg"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d05e6ec36ad4ac438df84f641c3a6b634ad7bfb318afd16a6e6d3c5bea0d1b68"
+checksum = "7a447bf6b4f953899df19e588ecdf583960c120661b4e358ca1d93bd23a7af0c"
 dependencies = [
+ "once_cell",
  "serde",
  "serde_json",
+ "sysinfo",
 ]
 
 [[package]]
