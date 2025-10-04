@@ -123,15 +123,6 @@ We welcome contributions! Adding support typically involves:
 3. Testing with common applications
 
 Check existing implementations in the codebase for reference, and don't hesitate to open an issue if you need guidance.
-### Want to Add Compositor Support?
-
-We welcome contributions! Adding support typically involves:
-
-1. Implementing the compositor's native IPC protocol
-2. Adding window/app detection functionality  
-3. Testing with common applications
-
-Check existing implementations in the codebase for reference, and don't hesitate to open an issue if you need guidance.
 
 ## 🔧 About RUNE Configuration
 
