@@ -152,9 +152,10 @@ async fn main() -> Result<()> {
     // --- Wayland setup ---
     let wl_data = setup_wayland(Arc::clone(&idle_timer), cfg.respect_idle_inhibitors).await?;
 
-    // --- Control socket ---
+    // --- Control socket ---  
     ipc::spawn_control_socket_with_listener(
         Arc::clone(&idle_timer),
+        Arc::clone(&app_inhibitor),
         config_path.to_str().unwrap().to_string(),
         listener,
     ).await;

@@ -5,10 +5,12 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{config, idle_timer::IdleTimer, log::{log_message, log_error_message}};
 use crate::SOCKET_PATH;
+use crate::app_inhibit::AppInhibitor;
 
 /// Spawn the control socket task using a pre-bound listener
 pub async fn spawn_control_socket_with_listener(
     idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
+    app_inhibitor: Arc<tokio::sync::Mutex<AppInhibitor>>,
     cfg_path: String,
     listener: UnixListener,
 ) {
@@ -72,7 +74,9 @@ pub async fn spawn_control_socket_with_listener(
                         "info" => {
                             let idle = idle_timer.lock().await;
                             let idle_time = idle.elapsed_idle();
-                            let idle_inhibited = idle.paused;
+                            let mut inhibitor = app_inhibitor.lock().await;
+                            let app_blocking = inhibitor.is_any_app_running().await;
+                            let idle_inhibited = idle.paused || app_blocking;
                             let uptime = idle.start_time.elapsed();
 
                             // Pass runtime info into pretty_print

@@ -13,10 +13,12 @@ pub struct AppInhibitor {
     system: System,
     active_apps: HashSet<String>,
     desktop: String,
+    #[allow(dead_code)]
+    idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
 }
 
 impl AppInhibitor {
-    pub fn new(cfg: Arc<IdleConfig>) -> Self {
+    pub fn new(cfg: Arc<IdleConfig>, idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>) -> Self {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
             .to_lowercase();
@@ -33,6 +35,7 @@ impl AppInhibitor {
             system,
             active_apps: HashSet::new(),
             desktop,
+            idle_timer,
         }
     }
 
@@ -175,21 +178,27 @@ impl AppInhibitor {
 }
 
 pub fn spawn_app_inhibit_task(
-    _idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
+    idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
     cfg: Arc<IdleConfig>
 ) -> Arc<Mutex<AppInhibitor>> {
-    let inhibitor = Arc::new(Mutex::new(AppInhibitor::new(cfg)));
-    
+    let inhibitor = Arc::new(Mutex::new(AppInhibitor::new(cfg, Arc::clone(&idle_timer))));
+ 
     let inhibitor_clone = Arc::clone(&inhibitor);
     tokio::spawn(async move {
         loop {
             {
                 let mut guard = inhibitor_clone.lock().await;
-                let _ = guard.is_any_app_running().await;
+                let any_running = guard.is_any_app_running().await;
+
+                if any_running {
+                    let mut timer = idle_timer.lock().await;
+                    timer.reset(); // <-- this prevents idle actions while the app is running
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         }
     });
+
 
     inhibitor
 }
