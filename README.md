@@ -84,7 +84,7 @@ install -Dm755 target/release/stasis ~/.local/bin/stasis
 
 1. **Install Stasis** using one of the methods above
 
-2. **Create your configuration** at `~/.config/stasis/config.rune`
+2. **Create your configuration** at `~/.config/stasis/stasis.rune`
 
 3. **Check the [wiki](https://github.com/saltnpepper97/stasis/wiki)** for detailed configuration examples
 
