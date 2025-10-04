@@ -5,124 +5,169 @@
 <h1 align="center">Stasis</h1>
 
 <p align="center">
-  <i>A modern Wayland idle manager designed for simplicity and effectiveness.</i>
+  <strong>A modern Wayland idle manager that knows when to step back.</strong>
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#getting-started">Getting Started</a> •
-  <a href="#contributing">Contributing</a>
+  Keep your session in perfect balance—automatically preventing idle when it matters, allowing it when it doesn't.
 </p>
 
-## Features
+<p align="center">
+  <img src="https://img.shields.io/github/last-commit/saltnpepper97/stasis?style=flat-square&color=%2328A745" alt="GitHub last commit"/>
+  <img src="https://img.shields.io/aur/version/stasis?style=flat-square" alt="AUR Version"/>
+  <img src="https://img.shields.io/badge/License-MIT-E5534B?style=flat-square" alt="MIT License"/>
+  <img src="https://img.shields.io/badge/Wayland-00BFFF?style=flat-square&logo=wayland&logoColor=white" alt="Wayland"/>
+  <img src="https://img.shields.io/badge/Rust-1.89+-orange?style=flat-square&logo=rust&logoColor=white" alt="Rust"/>
+</p>
+
+<p align="center">
+  <a href="#-features">Features</a> •
+  <a href="#-installation">Installation</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#compositor-support">Compositor Support</a> •
+  <a href="#-contributing">Contributing</a>
+</p>
+
+---
+
+## ✨ Features
+
+Stasis doesn't just lock your screen after a timer—it understands context. Watching a video? Reading a document? Playing music? Stasis detects these scenarios and intelligently manages idle behavior, so you never have to jiggle your mouse to prevent an unwanted screen lock.
 
 - **🧠 Smart idle detection** with configurable timeouts
-- **🎵 Media-aware idle handling** - automatically detects media playback
-- **🚫 Application-specific inhibitors** - prevent idle when specific apps are running
-- **⏸️ Idle inhibitor respect** - honors Wayland idle inhibitor protocols
-- **⚙️ Flexible action system** - supports named action blocks and custom commands
-- **🔍 Regex pattern matching** - powerful app filtering with regular expressions
-- **📝 Clean configuration** - uses the intuitive [RUNE](https://github.com/saltnpepper97/rune-cfg) configuration language
-- **🔧 CLI options** - verbose logging, version info, and live config reloading
-- **⚡ Live reload** - update configuration without restarting the daemon
+- **🎵 Media-aware idle handling** – automatically detects media playback
+- **🚫 Application-specific inhibitors** – prevent idle when specific apps are running
+- **⏸️ Idle inhibitor respect** – honors Wayland idle inhibitor protocols
+- **🛌 Lid events via DBus** – detect laptop lid open/close events to manage idle
+- **⚙️ Flexible action system** – supports named action blocks and custom commands
+- **🔍 Regex pattern matching** – powerful app filtering with regular expressions
+- **📝 Clean configuration** – uses the intuitive [RUNE](https://github.com/saltnpepper97/rune-cfg) configuration language
+- **⚡ Live reload** – update configuration without restarting the daemon
 
-## Compositor Support
-
-Stasis uses each compositor's native IPC protocol for app inhibiting functionality.
-
-| Compositor | app_inhibit Support | Status |
-|------------|-------------------|--------|
-| Niri | ✅ | Tested & Working |
-| River | ✅ | Implemented (see below) |
-| Hyprland | ✅ | Implemented |
-| Others | ❌ | Send a PR! |
-
-### River Support Notes
-
-- **Limited window enumeration:** Unlike Niri or Hyprland, River does not provide a full IPC interface to list all windows. Stasis cannot reliably enumerate every active application via River.
-- **Fallback mechanism:** When using River, Stasis falls back to process-based detection (sysinfo) for app inhibition.
-- **Regex and app names may differ:** Because process-based detection relies on executable names and paths, some regex patterns or app IDs from Niri/Hyprland may not match exactly. Users may need to adjust inhibit_apps patterns for River.
-- **Logging:** Stasis will log which apps were detected for inhibition, helping users refine their patterns.
-
-> **Tip:** For best results with River, include both exact executable names and regex patterns for applications you want to inhibit.
-
-**Want to add support for your compositor?** We welcome pull requests! Stasis integrates with each compositor's native IPC protocol, so adding support typically involves implementing the specific IPC calls for window/app detection.
-
-## Installation
+## 📦 Installation
 
 ### Arch Linux (AUR)
 
-Available on the AUR as `stasis` or `stasis-git` for latest commit.
+Install the stable release or latest development version:
 
-Using `yay`:
 ```bash
+# Stable release
 yay -S stasis
+
+# Or latest git version
+yay -S stasis-git
 ```
 
-Using `paru`:
+Works with `paru` too:
 ```bash
 paru -S stasis
 ```
 
 ### From Source
 
+Build and install manually for maximum control:
+
 ```bash
+# Clone and build
 git clone https://github.com/saltnpepper97/stasis
 cd stasis
-cargo build --release --locked --features "wlroots_virtual_keyboard"
-sudo install -Dm755 target/release/stasis /usr/local/bin/stasis
-```
+cargo build --release --locked
 
-Or install to your local bin directory:
-```bash
+# Install system-wide
+sudo install -Dm755 target/release/stasis /usr/local/bin/stasis
+
+# Or install to user directory
 install -Dm755 target/release/stasis ~/.local/bin/stasis
 ```
 
-## Getting started
+## 🚀 Quick Start
 
-### Visit the [wiki](https://github.com/saltnpepper97/stasis/wiki)
+1. **Install Stasis** using one of the methods above
 
-## About RUNE
+2. **Create your configuration** at `~/.config/stasis/config.rune`
 
-Stasis uses **[RUNE](https://github.com/saltnpepper97/rune-cfg)**, a configuration language designed to be simple but effective. RUNE features:
+3. **Check the [wiki](https://github.com/saltnpepper97/stasis/wiki)** for detailed configuration examples
 
-- **Clean, readable syntax** - Easy to write and understand
-- **Variable support** - Define and reference variables
-- **Nested configuration blocks** - Organize complex configurations
-- **Array and string literals** - Flexible data types
-- **Raw string support** - Use `r"pattern"` syntax for regex patterns
-- **Comments** - Document your config with `#`
-- **Type safety and validation** - Catch errors early
-- **Metadata** - Use `@` symbol to denote metadata
+4. **Start the daemon** and enjoy intelligent idle management!
 
-## Contributing
+For configuration examples, CLI options, and advanced usage, visit the [full documentation](https://github.com/saltnpepper97/stasis/wiki).
 
-We welcome contributions! Here's how you can help:
+## Compositor Support
 
-- 🐛 **Report bugs** by opening an issue
-- 💡 **Request features** with detailed use cases  
-- 🔧 **Submit pull requests** for bug fixes or new features
-- 📦 **Package for your distro** and let us know so we can link to it
-- 📖 **Improve documentation** or add examples
+Stasis integrates with each compositor's native IPC protocol for optimal app detection and inhibition.
 
-### Adding Compositor Support
+| Compositor | Support Status | Notes |
+|------------|---------------|-------|
+| **Niri** | ✅ Full Support | Tested and working perfectly |
+| **Hyprland** | ✅ Full Support | Native IPC integration |
+| **labwc** | ⚠️ Limited | Process-based fallback (details below) |
+| **River** | ⚠️ Limited | Process-based fallback (details below) |
+| **Your Favorite** | 🤝 PRs Welcome | Help us expand support! |
 
-Want to add support for your favorite compositor? We'd love your help! Adding support typically involves:
+### 📌 River & labwc Compatibility Notes
+
+Both River and labwc have IPC protocol limitations that affect Stasis functionality:
+
+- **Limited window enumeration:** These compositors don't provide complete window lists via IPC
+- **Fallback mode:** Stasis uses process-based detection (sysinfo) for app inhibition
+- **Pattern adjustments:** Executable names may differ from app IDs—check logs and adjust regex patterns accordingly
+
+> **💡 Tip:** When using River or labwc, include both exact executable names and flexible regex patterns in your `inhibit_apps` configuration. Enable verbose logging to see which apps are detected.
+
+### Want to Add Compositor Support?
+
+We welcome contributions! Adding support typically involves:
 
 1. Implementing the compositor's native IPC protocol
-2. Adding window/app detection functionality
-3. Testing with real applications
+2. Adding window/app detection functionality  
+3. Testing with common applications
 
-Check out the existing implementations in the source code for reference.
+Check existing implementations in the codebase for reference, and don't hesitate to open an issue if you need guidance.
+### Want to Add Compositor Support?
 
-## License
+We welcome contributions! Adding support typically involves:
 
-[MIT License](LICENSE)
+1. Implementing the compositor's native IPC protocol
+2. Adding window/app detection functionality  
+3. Testing with common applications
+
+Check existing implementations in the codebase for reference, and don't hesitate to open an issue if you need guidance.
+
+## 🔧 About RUNE Configuration
+
+Stasis uses **[RUNE](https://github.com/saltnpepper97/rune-cfg)**—a purpose-built configuration language that's both powerful and approachable.
+
+**Why RUNE?**
+- 📖 **Human-readable:** Clean syntax that makes sense at a glance
+- 🔢 **Variables:** Define once, reference anywhere
+- 🎯 **Type-safe:** Catch configuration errors before runtime
+- 📦 **Nested blocks:** Organize complex configurations naturally
+- 🔤 **Raw strings:** Use `r"regex.*"` for patterns without escaping hell
+- 💬 **Comments:** Document your config with `#`
+- 🏷️ **Metadata:** Add context with `@` annotations
+
+RUNE makes configuration feel less like programming and more like describing what you want—because that's what a config should be.
+
+## 🤝 Contributing
+
+Contributions make Stasis better for everyone! Here's how you can help:
+
+### Ways to Contribute
+
+- 🐛 **Report bugs** – Open an issue with reproduction steps
+- 💡 **Suggest features** – Share your use cases and ideas
+- 🔧 **Submit PRs** – Fix bugs, add features, or improve code
+- 📦 **Package for distros** – Make Stasis available to more users
+- 📖 **Improve docs** – Better explanations, examples, and guides
+- 🖥️ **Add compositor support** – Expand Wayland ecosystem compatibility
+
+## 📄 License
+
+Released under the [MIT License](LICENSE) – free to use, modify, and distribute.
 
 ---
+
 <p align="center">
-  <i>keeping your Wayland session in perfect balance between active and idle.</i>
+  <sub>Built with ❤️ for the Wayland community</sub><br>
+  <sub><i>Keeping your session in perfect balance between active and idle</i></sub>
 </p>
-
-
