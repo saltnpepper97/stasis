@@ -4,6 +4,18 @@
 
 <h1 align="center">Stasis</h1>
 
+<div style="background-color: #FFF3CD; border-left: 6px solid #FFC107; padding: 20px; margin: 20px 0; display: flex; align-items: flex-start;">
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#856404" style="flex-shrink: 0; margin-right: 12px;">
+    <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+  </svg>
+  <div>
+    <h3 style="margin-top: 0; margin-bottom: 8px; color: #856404;">Attention</h3>
+    <p style="margin: 0; color: #856404;">
+      As of v0.2.0 it is advised that you download <code>stasis</code> instead of <code>stasis-git</code>, as <code>stasis-git</code> will become the testing bed for new features.
+    </p>
+  </div>
+</div>
+
 <p align="center">
   <strong>A modern Wayland idle manager that knows when to step back.</strong>
 </p>
