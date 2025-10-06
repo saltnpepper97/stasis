@@ -188,11 +188,14 @@ pub fn spawn_app_inhibit_task(
         loop {
             {
                 let mut guard = inhibitor_clone.lock().await;
+                let was_running = !guard.active_apps.is_empty();
                 let any_running = guard.is_any_app_running().await;
 
-                if any_running {
-                    let mut timer = idle_timer.lock().await;
-                    timer.reset(); // <-- this prevents idle actions while the app is running
+                let mut timer = idle_timer.lock().await;
+                if any_running && !was_running {
+                    timer.reset();
+                } else if !any_running && was_running {
+                    timer.resume();
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
