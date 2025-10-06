@@ -4,10 +4,6 @@
 
 <h1 align="center">Stasis</h1>
 
-> [!WARNING]
-> 
-> As of v0.2.0 it is advised that you download `stasis` instead of `stasis-git`, as `stasis-git` will become the testing bed for new features.
-
 <p align="center">
   <strong>A modern Wayland idle manager that knows when to step back.</strong>
 </p>
