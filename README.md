@@ -18,7 +18,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/last-commit/saltnpepper97/stasis?style=flat-square&color=%2328A745" alt="GitHub last commit"/>
-  <img src="https://img.shields.io/aur/version/stasis?style=flat-square" alt="AUR Version"/>
+  <img src="https://img.shields.io/aur/version/stasis?cacheSeconds=60" alt="AUR version">
   <img src="https://img.shields.io/badge/License-MIT-E5534B?style=flat-square" alt="MIT License"/>
   <img src="https://img.shields.io/badge/Wayland-00BFFF?style=flat-square&logo=wayland&logoColor=white" alt="Wayland"/>
   <img src="https://img.shields.io/badge/Rust-1.89+-orange?style=flat-square&logo=rust&logoColor=white" alt="Rust"/>
