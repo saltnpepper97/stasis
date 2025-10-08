@@ -13,6 +13,12 @@
 </p>
 
 <p align="center">
+  <b>Join the Official Stasis Discord!</b><br>
+  <a href="https://discord.gg/v6gxRDjn">👉 Click here to join the community</a>
+</p>
+
+
+<p align="center">
   <img src="https://img.shields.io/github/last-commit/saltnpepper97/stasis?style=for-the-badge&color=%2328A745" alt="GitHub last commit"/>
   <img src="https://img.shields.io/aur/version/stasis?style=for-the-badge" alt="AUR version">
   <img src="https://img.shields.io/badge/License-MIT-E5534B?style=for-the-badge" alt="MIT License"/>
