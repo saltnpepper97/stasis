@@ -38,12 +38,12 @@ pub async fn spawn_control_socket_with_listener(
                         }
                         "pause" => {
                             let mut timer = idle_timer.lock().await;
-                            timer.pause();
+                            timer.pause(true);
                             log_message("Idle timers paused");
                         }
                         "resume" => {
                             let mut timer = idle_timer.lock().await;
-                            timer.resume();
+                            timer.resume(true);
                             log_message("Idle timers resumed");
                         }
                         "trigger_idle" => {
@@ -71,23 +71,57 @@ pub async fn spawn_control_socket_with_listener(
                                 std::process::exit(0);
                             });
                         }
-                        "info" => {
+                        "info" | "info --json" => {
+                            let as_json = cmd.contains("--json");
+
                             let idle = idle_timer.lock().await;
                             let idle_time = idle.elapsed_idle();
                             let mut inhibitor = app_inhibitor.lock().await;
                             let app_blocking = inhibitor.is_any_app_running().await;
-                            let idle_inhibited = idle.paused || app_blocking;
+                            let idle_inhibited = idle.paused || idle.manually_paused || app_blocking;
                             let uptime = idle.start_time.elapsed();
 
-                            // Pass runtime info into pretty_print
-                            let stats = idle.cfg.pretty_print(
-                                Some(idle_time),
-                                Some(uptime),
-                                Some(idle_inhibited),
-                            );
+                            if as_json {
+                                // Waybar-friendly JSON
+                                let output = if idle_inhibited {
+                                    serde_json::json!({
+                                        "text": "☕", // icon shown in bar
+                                        "tooltip": format!(
+                                            "Idle is inhibited\nIdle time: {}s\nUptime: {}s\nPaused: {}\nManually paused: {}\nApp blocking: {}",
+                                            idle_time.as_secs(),
+                                            uptime.as_secs(),
+                                            idle.paused,
+                                            idle.manually_paused,
+                                            app_blocking
+                                        )
+                                    })
+                                } else {
+                                    serde_json::json!({
+                                        "text": "⌚",
+                                        "tooltip": format!(
+                                            "Idle is active\nIdle time: {}s\nUptime: {}s\nPaused: {}\nManually paused: {}\nApp blocking: {}",
+                                            idle_time.as_secs(),
+                                            uptime.as_secs(),
+                                            idle.paused,
+                                            idle.manually_paused,
+                                            app_blocking
+                                        )
+                                    })
+                                };
 
-                            if let Err(e) = stream.write_all(stats.as_bytes()).await {
-                                log_error_message(&format!("Failed to send stats: {e}"));
+                                if let Err(e) = stream.write_all(output.to_string().as_bytes()).await {
+                                    log_error_message(&format!("Failed to send JSON info: {e}"));
+                                }
+                            } else {
+                                let stats = idle.cfg.pretty_print(
+                                    Some(idle_time),
+                                    Some(uptime),
+                                    Some(idle_inhibited),
+                                );
+
+                                if let Err(e) = stream.write_all(stats.as_bytes()).await {
+                                    log_error_message(&format!("Failed to send info: {e}"));
+                                }
                             }
                         }
                         _ => {

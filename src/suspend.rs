@@ -5,7 +5,7 @@ use zbus::{Connection, fdo::Result as ZbusResult, Proxy};
 use crate::idle_timer::IdleTimer;
 use crate::log;
 
-pub async fn listen_for_lid_events(idle_timer: Arc<Mutex<IdleTimer>>) -> ZbusResult<()> {
+pub async fn listen_for_suspend_events(idle_timer: Arc<Mutex<IdleTimer>>) -> ZbusResult<()> {
     // Connect to the system bus
     let connection = Connection::system().await?;
     
@@ -20,7 +20,7 @@ pub async fn listen_for_lid_events(idle_timer: Arc<Mutex<IdleTimer>>) -> ZbusRes
     // Listen to PrepareForSleep signals
     let mut stream = proxy.receive_signal("PrepareForSleep").await?;
     
-    log::log_message("Listening for lid events...");
+    log::log_message("Listening for D-Bus suspend events...");
     
     while let Some(signal) = stream.next().await {
         // Deserialize the body directly to bool
@@ -30,7 +30,7 @@ pub async fn listen_for_lid_events(idle_timer: Arc<Mutex<IdleTimer>>) -> ZbusRes
         let mut timer = idle_timer.lock().await;
         
         if going_to_sleep {
-            log::log_message("System about to suspend (lid close?)");
+            log::log_message("System is preparing to suspend...");
             timer.trigger_pre_suspend(false, true).await;
         } else {
             log::log_message("System resumed from sleep");

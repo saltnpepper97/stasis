@@ -193,9 +193,9 @@ pub fn spawn_app_inhibit_task(
 
                 let mut timer = idle_timer.lock().await;
                 if any_running && !was_running {
-                    timer.reset();
+                    timer.pause(false);
                 } else if !any_running && was_running {
-                    timer.resume();
+                    timer.resume(false);
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
