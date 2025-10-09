@@ -1,6 +1,4 @@
-use std::sync::Arc;
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use eyre::Result;
@@ -16,10 +14,10 @@ mod config;
 mod idle_timer;
 mod input;
 mod ipc;
-mod lid;
 mod log;
 mod media;
 mod power_detection;
+mod suspend;
 mod utils;
 mod wayland;
 
@@ -62,7 +60,10 @@ enum Commands {
     Stop,
 
     #[command(about = "Display current session information")]
-    Info,
+    Info {
+        #[arg(long, help = "Output as JSON (for Waybar or scripts)")]
+        json: bool,
+    },
 }
 
 const SOCKET_PATH: &str = "/tmp/stasis.sock";
@@ -81,25 +82,47 @@ async fn main() -> Result<()> {
     // --- Handle subcommands via socket ---
     if let Some(cmd) = &args.command {
         use tokio::net::UnixStream;
-        let msg = match cmd {
-            Commands::Reload => "reload",
-            Commands::Pause => "pause",
-            Commands::Resume => "resume",
-            Commands::TriggerIdle => "trigger_idle",
-            Commands::TriggerPreSuspend => "trigger_presuspend",
-            Commands::Stop => "stop",
-            Commands::Info => "info",
-        };
 
-        if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
-            let _ = stream.write_all(msg.as_bytes()).await;
-            if msg == "info" {
-                let mut response = Vec::new();
-                let _ = stream.read_to_end(&mut response).await;
-                println!("{}", String::from_utf8_lossy(&response));
+        match cmd {
+            Commands::Info { json } => {
+                if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
+                    let msg = if *json { "info --json" } else { "info" };
+                    let _ = stream.write_all(msg.as_bytes()).await;
+
+                    let mut response = Vec::new();
+                    let _ = stream.read_to_end(&mut response).await;
+                    println!("{}", String::from_utf8_lossy(&response));
+                } else {
+                    // Waybar-friendly "Stasis not running"
+                    if *json {
+                        println!(r#"{{"text":"😴","tooltip":"Stasis is not running"}}"#);
+                    } else {
+                        println!("Stasis is not running");
+                    }
+                }
             }
-        } else {
-            log_error_message("No running instance found");
+            _ => {
+                let msg = match cmd {
+                    Commands::Reload => "reload",
+                    Commands::Pause => "pause",
+                    Commands::Resume => "resume",
+                    Commands::TriggerIdle => "trigger_idle",
+                    Commands::TriggerPreSuspend => "trigger_presuspend",
+                    Commands::Stop => "stop",
+                    _ => unreachable!(),
+                };
+
+                if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
+                    let _ = stream.write_all(msg.as_bytes()).await;
+                    if msg == "info" {
+                        let mut response = Vec::new();
+                        let _ = stream.read_to_end(&mut response).await;
+                        println!("{}", String::from_utf8_lossy(&response));
+                    }
+                } else {
+                    log_error_message("No running instance found");
+                }
+            }
         }
 
         return Ok(());
@@ -136,14 +159,55 @@ async fn main() -> Result<()> {
     idle_timer::spawn_idle_task(Arc::clone(&idle_timer)).await;
     input::spawn_input_task(Arc::clone(&idle_timer));
 
-    // --- Spawn lid event listener ---
+    // --- Spawn suspend event listener ---
     let lid_idle_timer = Arc::clone(&idle_timer);
     tokio::spawn(async move {
-        if let Err(e) = lid::listen_for_lid_events(lid_idle_timer).await {
-            log_error_message(&format!("Lid event listener failed: {}", e));
+        if let Err(e) = suspend::listen_for_suspend_events(lid_idle_timer).await {
+            log_error_message(&format!("D-Bus suspend event listener failed: {}", e));
         }
     });
 
+    // AC/Battery Detection
+    let idle_clone = Arc::clone(&idle_timer);
+    tokio::spawn(async move {
+        // Detect laptop or desktop
+        let is_laptop = crate::utils::is_laptop();
+
+        // Detect initial power state and log it
+        let last_on_ac = crate::power_detection::detect_initial_power_state(is_laptop);
+
+        // Set initial state in IdleTimer
+        {
+            let mut timer = idle_clone.lock().await;
+            timer.on_ac = last_on_ac;
+        }
+
+        // Poll every 5 seconds (or any interval you want)
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        let mut last_on_ac = last_on_ac;
+        loop {
+            ticker.tick().await;
+
+            // Skip desktop (always AC)
+            if !is_laptop {
+                continue;
+            }
+
+            // Check current AC state
+            let on_ac = crate::power_detection::is_on_ac_power(is_laptop);
+
+            // Only update if state changed
+            if on_ac != last_on_ac {
+                last_on_ac = on_ac;
+                log_message(&format!("Power source changed: {}", if on_ac { "AC" } else { "Battery" }));
+
+                // Update IdleTimer
+                idle_clone.lock().await.update_power_source(on_ac).await;
+            }
+        }
+    });
+
+    // --- Spawn app inhibit task ---
     let app_inhibitor = app_inhibit::spawn_app_inhibit_task(
         Arc::clone(&idle_timer),
         Arc::clone(&cfg)

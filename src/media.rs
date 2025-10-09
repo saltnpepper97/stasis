@@ -3,7 +3,7 @@ use eyre::Result;
 use mpris::{PlayerFinder, PlaybackStatus};
 use tokio::{task, time};
 use crate::idle_timer::IdleTimer;
-use crate::log::{log_message, log_error_message};
+use crate::log::log_error_message;
 
 /// Setup MPRIS monitoring using a Tokio task
 pub fn spawn_media_monitor(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Result<()> {
@@ -39,12 +39,10 @@ pub fn spawn_media_monitor(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>) -> Re
             // Pause or resume idle timer based on media playback
             let mut timer = idle_timer_clone.lock().await;
             if any_playing && !media_playing {
-                log_message("Media playback detected, timers paused");
-                timer.pause();
+                timer.pause(false);
                 media_playing = true;
             } else if !any_playing && media_playing {
-                log_message("Media playback stopped, timers resumed");
-                timer.resume();
+                timer.resume(false);
                 media_playing = false;
             }
         }

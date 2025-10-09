@@ -4,7 +4,7 @@ use crate::log::log_message;
 /// Detect initial power state on laptop (called once at startup)
 pub fn detect_initial_power_state(is_laptop: bool) -> bool {
     if !is_laptop {
-        log_message("Desktop detected, assuming AC power");
+        log_message("Desktop detected, skipping power source check");
         return true;
     }
 

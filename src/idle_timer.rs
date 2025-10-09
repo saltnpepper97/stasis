@@ -10,7 +10,6 @@ use tokio::task::JoinHandle;
 use crate::config::{IdleAction, IdleActionKind, IdleConfig};
 use crate::log::{log_error_message, log_message};
 use crate::brightness::{capture_brightness, restore_brightness, BrightnessState};
-use crate::power_detection::{detect_initial_power_state, is_on_ac_power};
 
 const MAX_SPAWNED_TASKS: usize = 10;
 
@@ -20,8 +19,9 @@ pub struct IdleTimer {
     pub last_activity: Instant,
     pub debounce_until: Option<Instant>,
     pub paused: bool,
+    pub manually_paused: bool,
     pub resume_command: Option<String>,
-    is_laptop: bool,
+    pub on_ac: bool,
     actions: Vec<IdleAction>,
     ac_actions: Vec<IdleAction>,
     battery_actions: Vec<IdleAction>,
@@ -30,7 +30,6 @@ pub struct IdleTimer {
     compositor_managed: bool,
     active_kinds: HashSet<String>,
     previous_brightness: Option<BrightnessState>,
-    on_ac: bool,
     suspend_occurred: bool,
     spawned_tasks: Vec<JoinHandle<()>>,
     idle_task_handle: Option<JoinHandle<()>>,
@@ -38,13 +37,7 @@ pub struct IdleTimer {
 
 impl IdleTimer {
     pub fn new(cfg: &IdleConfig) -> Self {
-        let is_laptop = crate::utils::is_laptop();
-        let on_ac = if is_laptop {
-            detect_initial_power_state(is_laptop)
-        } else {
-            log_message("Desktop detected, skipping AC/Battery detection");
-            false
-        };
+        let on_ac = true;
 
         let default_actions: Vec<_> = cfg
             .actions
@@ -78,7 +71,6 @@ impl IdleTimer {
         
         let timer = Self {
             cfg: cfg.clone(),
-            is_laptop,
             start_time: now,
             last_activity: now,
             debounce_until: None,
@@ -93,6 +85,7 @@ impl IdleTimer {
             previous_brightness: None,
             on_ac,
             paused: false,
+            manually_paused: false,
             suspend_occurred: false,
             spawned_tasks: Vec::new(),
             idle_task_handle: None,
@@ -273,7 +266,7 @@ impl IdleTimer {
     }
 
     pub async fn update_power_source(&mut self, on_ac: bool) {
-        if !self.is_laptop || self.on_ac == on_ac {
+        if self.on_ac == on_ac {
             return;
         }
 
@@ -336,34 +329,83 @@ impl IdleTimer {
         }
     }
 
-    pub fn pause(&mut self) {
-        self.paused = true;
+    pub fn pause(&mut self, manually: bool) {
+        if manually {
+            self.manually_paused = true;
+            self.paused = false; // Clear automatic pause when manually pausing
+            log_message("Idle timers manually paused");
+        } else {
+            // Don't auto-pause if manually paused
+            if !self.manually_paused {
+                self.paused = true;
+                log_message("Idle timers automatically paused");
+            } else {
+                // Silently ignore automatic pause when manually paused
+            }
+        }
     }
 
-    pub fn resume(&mut self) {
-        if self.paused {
-            self.paused = false;
-            let was_idle = self.is_idle_flags.iter().any(|&b| b);
-            self.last_activity = Instant::now();
-            self.cleanup_tasks();
-            self.is_idle_flags.fill(false);
+    pub fn resume(&mut self, manually: bool) {
+        if manually {
+            if self.manually_paused {
+                self.manually_paused = false;
+                self.paused = false; // Also clear automatic pause
+                log_message("Idle timers manually resumed");
+                
+                // Reset idle state when manually resuming
+                let was_idle = self.is_idle_flags.iter().any(|&b| b);
+                self.last_activity = Instant::now();
+                self.cleanup_tasks();
+                self.is_idle_flags.fill(false);
 
-            if was_idle {
-                if let Some(state) = &self.previous_brightness {
-                    restore_brightness(state);
+                if was_idle {
+                    if let Some(state) = &self.previous_brightness {
+                        restore_brightness(state);
+                    }
+
+                    if let Some(cmd) = &self.resume_command {
+                        let cmd_clone = cmd.clone();
+                        self.spawn_task_limited(async move {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            let _ = crate::actions::run_command_silent(&cmd_clone).await;
+                        });
+                    }
                 }
 
-                if let Some(cmd) = &self.resume_command {
-                    let cmd_clone = cmd.clone();
-                    self.spawn_task_limited(async move {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        let _ = crate::actions::run_command_silent(&cmd_clone).await;
-                    });
-                }
+                self.active_kinds.clear();
+                self.previous_brightness = None;
             }
+        } else {
+            // Don't auto-resume if manually paused
+            if !self.manually_paused && self.paused {
+                self.paused = false;
+                log_message("Idle timers automatically resumed");
+                
+                // Reset idle state when automatically resuming
+                let was_idle = self.is_idle_flags.iter().any(|&b| b);
+                self.last_activity = Instant::now();
+                self.cleanup_tasks();
+                self.is_idle_flags.fill(false);
 
-            self.active_kinds.clear();
-            self.previous_brightness = None;
+                if was_idle {
+                    if let Some(state) = &self.previous_brightness {
+                        restore_brightness(state);
+                    }
+
+                    if let Some(cmd) = &self.resume_command {
+                        let cmd_clone = cmd.clone();
+                        self.spawn_task_limited(async move {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            let _ = crate::actions::run_command_silent(&cmd_clone).await;
+                        });
+                    }
+                }
+
+                self.active_kinds.clear();
+                self.previous_brightness = None;
+            } else {
+                // Silently ignore automatic resume when manually paused
+            }
         }
     }
 
@@ -472,24 +514,15 @@ fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        let mut last_power_state = {
-            let timer = idle_timer.lock().await;
-            Some(timer.on_ac)
-        };
 
         loop {
             ticker.tick().await;
             let mut timer = idle_timer.lock().await;
 
-            if timer.is_laptop {
-                let on_ac = is_on_ac_power(true);
-                if last_power_state != Some(on_ac) {
-                    timer.update_power_source(on_ac).await;
-                    last_power_state = Some(on_ac);
-                }
+            // Only check idle if not manually paused
+            if !timer.manually_paused {
+                timer.check_idle().await;
             }
-
-            timer.check_idle().await;
         }
     })
 }
