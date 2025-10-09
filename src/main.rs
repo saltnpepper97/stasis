@@ -56,6 +56,9 @@ enum Commands {
     #[command(about = "Trigger pre-suspend action manually")]
     TriggerPreSuspend,
 
+    #[command(about = "Toggle manual idle inhibition (for Waybar etc.)")]
+    ToggleInhibit,
+
     #[command(about = "Stop the currently running instances of Stasis")]
     Stop,
 
@@ -108,6 +111,7 @@ async fn main() -> Result<()> {
                     Commands::Resume => "resume",
                     Commands::TriggerIdle => "trigger_idle",
                     Commands::TriggerPreSuspend => "trigger_presuspend",
+                    Commands::ToggleInhibit => "toggle_inhibit",
                     Commands::Stop => "stop",
                     _ => unreachable!(),
                 };

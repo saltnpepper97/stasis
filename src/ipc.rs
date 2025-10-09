@@ -1,11 +1,14 @@
 use std::sync::Arc;
 use tokio::net::UnixListener;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{config, idle_timer::IdleTimer, log::{log_message, log_error_message}};
-use crate::SOCKET_PATH;
-use crate::app_inhibit::AppInhibitor;
+use crate::{
+    app_inhibit::AppInhibitor,
+    config,
+    idle_timer::IdleTimer,
+    log::{log_error_message, log_message},
+    SOCKET_PATH,
+};
 
 /// Spawn the control socket task using a pre-bound listener
 pub async fn spawn_control_socket_with_listener(
@@ -15,11 +18,9 @@ pub async fn spawn_control_socket_with_listener(
     listener: UnixListener,
 ) {
     tokio::spawn(async move {
-        let listener = listener; // Already bound in main.rs
-
         loop {
             if let Ok((mut stream, _addr)) = listener.accept().await {
-                let mut buf = vec![0u8; 32];               
+                let mut buf = vec![0u8; 64];               
                 if let Ok(n) = stream.read(&mut buf).await {
                     let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_string();
 
@@ -31,31 +32,34 @@ pub async fn spawn_control_socket_with_listener(
                                     timer.update_from_config(&new_cfg).await;
                                     log_message("Config reloaded successfully");
                                 }
-                                Err(_) => {
-                                    log_error_message("Failed to reload config");
-                                }
+                                Err(_) => log_error_message("Failed to reload config"),
                             }
                         }
+
                         "pause" => {
                             let mut timer = idle_timer.lock().await;
                             timer.pause(true);
                             log_message("Idle timers paused");
                         }
+
                         "resume" => {
                             let mut timer = idle_timer.lock().await;
                             timer.resume(true);
                             log_message("Idle timers resumed");
                         }
+
                         "trigger_idle" => {
                             let mut timer = idle_timer.lock().await;
                             timer.trigger_idle().await;
                             log_message("Forced idle actions triggered");
                         }
+
                         "trigger_presuspend" => {
                             let mut timer = idle_timer.lock().await;
                             timer.trigger_pre_suspend(false, true).await;
                             log_message("Pre-suspend command triggered");
                         }
+
                         "stop" => {
                             log_message("Received stop command, shutting down gracefully");
 
@@ -64,13 +68,42 @@ pub async fn spawn_control_socket_with_listener(
                                 let mut timer = idle_timer_clone.lock().await;
                                 timer.shutdown().await;
                                 log_message("IdleTimer shutdown complete, exiting process");
-
-                                // Cleanup socket file before exit
                                 let _ = std::fs::remove_file(SOCKET_PATH);
-
                                 std::process::exit(0);
                             });
                         }
+
+                        // ✅ NEW COMMAND: toggle manual inhibition (Waybar support)
+                        "toggle_inhibit" => {
+                            let mut timer = idle_timer.lock().await;
+                            let currently_inhibited = timer.is_manually_inhibited();
+
+                            if currently_inhibited {
+                                timer.set_manual_inhibit(false).await;
+                                log_message("Manual inhibit disabled (toggle)");
+                            } else {
+                                timer.set_manual_inhibit(true).await;
+                                log_message("Manual inhibit enabled (toggle)");
+                            }
+
+                            // Send JSON response for Waybar feedback
+                            let response = if currently_inhibited {
+                                serde_json::json!({
+                                    "text": "⌚",
+                                    "tooltip": "Idle inhibition cleared"
+                                })
+                            } else {
+                                serde_json::json!({
+                                    "text": "🚫",
+                                    "tooltip": "Idle inhibition active"
+                                })
+                            };
+
+                            if let Err(e) = stream.write_all(response.to_string().as_bytes()).await {
+                                log_error_message(&format!("Failed to send toggle response: {e}"));
+                            }
+                        }
+
                         "info" | "info --json" => {
                             let as_json = cmd.contains("--json");
 
@@ -82,12 +115,11 @@ pub async fn spawn_control_socket_with_listener(
                             let uptime = idle.start_time.elapsed();
 
                             if as_json {
-                                // Waybar-friendly JSON
                                 let output = if idle_inhibited {
                                     serde_json::json!({
-                                        "text": "☕", // icon shown in bar
+                                        "text": "☕",
                                         "tooltip": format!(
-                                            "Idle is inhibited\nIdle time: {}s\nUptime: {}s\nPaused: {}\nManually paused: {}\nApp blocking: {}",
+                                            "Idle inhibited\nIdle time: {}s\nUptime: {}s\nPaused: {}\nManually paused: {}\nApp blocking: {}",
                                             idle_time.as_secs(),
                                             uptime.as_secs(),
                                             idle.paused,
@@ -99,7 +131,7 @@ pub async fn spawn_control_socket_with_listener(
                                     serde_json::json!({
                                         "text": "⌚",
                                         "tooltip": format!(
-                                            "Idle is active\nIdle time: {}s\nUptime: {}s\nPaused: {}\nManually paused: {}\nApp blocking: {}",
+                                            "Idle active\nIdle time: {}s\nUptime: {}s\nPaused: {}\nManually paused: {}\nApp blocking: {}",
                                             idle_time.as_secs(),
                                             uptime.as_secs(),
                                             idle.paused,
@@ -124,9 +156,8 @@ pub async fn spawn_control_socket_with_listener(
                                 }
                             }
                         }
-                        _ => {
-                            log_error_message(&format!("Unknown control command: {}", cmd));
-                        }
+
+                        _ => log_error_message(&format!("Unknown control command: {}", cmd)),
                     }
                 }
             }

@@ -155,6 +155,18 @@ impl IdleTimer {
         })
     }
 
+    pub fn is_manually_inhibited(&self) -> bool {
+        self.manually_paused
+    }
+
+    pub async fn set_manual_inhibit(&mut self, inhibit: bool) {
+        if inhibit {
+            self.pause(true);
+        } else {
+            self.resume(true);
+        }
+    }
+
     pub async fn check_idle(&mut self) {
         if self.paused {
             return;
