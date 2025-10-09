@@ -155,6 +155,18 @@ impl IdleTimer {
         })
     }
 
+    pub fn is_manually_inhibited(&self) -> bool {
+        self.manually_paused
+    }
+
+    pub async fn set_manual_inhibit(&mut self, inhibit: bool) {
+        if inhibit {
+            self.pause(true);
+        } else {
+            self.resume(true);
+        }
+    }
+
     pub async fn check_idle(&mut self) {
         if self.paused {
             return;
@@ -221,7 +233,6 @@ impl IdleTimer {
         let debounce_delay = Duration::from_secs(3);
         self.debounce_until = Some(Instant::now() + debounce_delay);
     }
-
 
     fn apply_reset(&mut self) {
         let was_idle = self.is_idle_flags.iter().any(|&b| b);

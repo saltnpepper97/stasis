@@ -56,6 +56,9 @@ enum Commands {
     #[command(about = "Trigger pre-suspend action manually")]
     TriggerPreSuspend,
 
+    #[command(about = "Toggle manual idle inhibition (for Waybar etc.)")]
+    ToggleInhibit,
+
     #[command(about = "Stop the currently running instances of Stasis")]
     Stop,
 
@@ -108,13 +111,15 @@ async fn main() -> Result<()> {
                     Commands::Resume => "resume",
                     Commands::TriggerIdle => "trigger_idle",
                     Commands::TriggerPreSuspend => "trigger_presuspend",
+                    Commands::ToggleInhibit => "toggle_inhibit",
                     Commands::Stop => "stop",
                     _ => unreachable!(),
                 };
 
                 if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
                     let _ = stream.write_all(msg.as_bytes()).await;
-                    if msg == "info" {
+
+                    if msg == "info" || msg == "toggle_inhibit" {
                         let mut response = Vec::new();
                         let _ = stream.read_to_end(&mut response).await;
                         println!("{}", String::from_utf8_lossy(&response));
