@@ -13,6 +13,7 @@ pub struct AppInhibitor {
     system: System,
     active_apps: HashSet<String>,
     desktop: String,
+    checks_since_reset: u32,
     #[allow(dead_code)]
     idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
 }
@@ -35,6 +36,7 @@ impl AppInhibitor {
             system,
             active_apps: HashSet::new(),
             desktop,
+            checks_since_reset: 0,
             idle_timer,
         }
     }
@@ -63,6 +65,18 @@ impl AppInhibitor {
 
     /// Process-based fallback - only refresh what we need
     fn check_processes_with_tracking(&mut self, new_active_apps: &mut HashSet<String>) -> bool {
+        const RESET_THRESHOLD: u32 = 150; // Approx 10 mins (150 checks * 4s/check)
+
+        self.checks_since_reset += 1;
+
+        if self.checks_since_reset >= RESET_THRESHOLD {
+            log_message("Periodic process tracker reset to reclaim memory.");
+            self.system = System::new_with_specifics(
+                RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing())
+            );
+            self.checks_since_reset = 0;
+        }
+
         // Only refresh process list, nothing else
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All, 
@@ -193,9 +207,9 @@ pub fn spawn_app_inhibit_task(
 
                 let mut timer = idle_timer.lock().await;
                 if any_running && !was_running {
-                    timer.pause(false);
+                    timer.reset();
                 } else if !any_running && was_running {
-                    timer.resume(false);
+                    timer.resume();
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
