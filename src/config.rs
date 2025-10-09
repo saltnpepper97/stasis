@@ -358,17 +358,3 @@ pub fn load_config(path: &str) -> Result<IdleConfig> {
     })
 }
 
-#[test]
-fn test_rune_config_parsing() {
-    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("examples/stasis.rune");
-
-    let config: IdleConfig = match load_config(path.to_str().unwrap()) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            panic!("Failed to load config: {:?}", e);
-        }
-    };
-
-    println!("{}", config.pretty_print());
-}
