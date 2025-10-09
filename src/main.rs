@@ -118,7 +118,8 @@ async fn main() -> Result<()> {
 
                 if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
                     let _ = stream.write_all(msg.as_bytes()).await;
-                    if msg == "info" {
+
+                    if msg == "info" || msg == "toggle_inhibit" {
                         let mut response = Vec::new();
                         let _ = stream.read_to_end(&mut response).await;
                         println!("{}", String::from_utf8_lossy(&response));

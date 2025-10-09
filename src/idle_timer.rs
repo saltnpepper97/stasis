@@ -234,7 +234,6 @@ impl IdleTimer {
         self.debounce_until = Some(Instant::now() + debounce_delay);
     }
 
-
     fn apply_reset(&mut self) {
         let was_idle = self.is_idle_flags.iter().any(|&b| b);
         self.last_activity = Instant::now();

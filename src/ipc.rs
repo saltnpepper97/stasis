@@ -20,7 +20,7 @@ pub async fn spawn_control_socket_with_listener(
     tokio::spawn(async move {
         loop {
             if let Ok((mut stream, _addr)) = listener.accept().await {
-                let mut buf = vec![0u8; 64];               
+                let mut buf = vec![0u8; 64];
                 if let Ok(n) = stream.read(&mut buf).await {
                     let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_string();
 
@@ -73,7 +73,6 @@ pub async fn spawn_control_socket_with_listener(
                             });
                         }
 
-                        // ✅ NEW COMMAND: toggle manual inhibition (Waybar support)
                         "toggle_inhibit" => {
                             let mut timer = idle_timer.lock().await;
                             let currently_inhibited = timer.is_manually_inhibited();
@@ -164,3 +163,4 @@ pub async fn spawn_control_socket_with_listener(
         }
     });
 }
+
