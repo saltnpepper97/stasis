@@ -1,4 +1,10 @@
-use std::fs;
+use std::{
+    fs,
+    sync::Arc,
+    time::Duration,
+};
+use tokio::sync::Mutex;
+use crate::core::legacy::LegacyIdleTimer;
 use crate::log::log_message;
 
 /// Detect initial power state on laptop (called once at startup)
@@ -51,4 +57,30 @@ pub fn is_on_ac_power(is_laptop: bool) -> bool {
 
     // If no AC detected, assume battery
     false
+}
+
+pub async fn spawn_power_monitor(idle_timer: Arc<Mutex<LegacyIdleTimer>>) {
+    let is_laptop = crate::utils::is_laptop();
+    let mut last_on_ac = detect_initial_power_state(is_laptop);
+
+    {
+        let mut timer = idle_timer.lock().await;
+        timer.on_ac = last_on_ac;
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        ticker.tick().await;
+
+        if !is_laptop {
+            continue;
+        }
+
+        let on_ac = is_on_ac_power(is_laptop);
+        if on_ac != last_on_ac {
+            last_on_ac = on_ac;
+            log_message(&format!("Power source changed: {}", if on_ac { "AC" } else { "Battery" }));
+            idle_timer.lock().await.update_power_source(on_ac).await;
+        }
+    }
 }

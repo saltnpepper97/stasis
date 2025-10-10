@@ -9,33 +9,34 @@ use tokio::task::JoinHandle;
 
 use crate::config::{IdleAction, IdleActionKind, IdleConfig};
 use crate::log::{log_error_message, log_message};
-use crate::brightness::{capture_brightness, restore_brightness, BrightnessState};
+use super::brightness::{capture_brightness, restore_brightness, BrightnessState};
+use super::pre_suspend::run_pre_suspend_sync;
+use super::tasks::{cleanup_tasks, spawn_task_limited};
 
-const MAX_SPAWNED_TASKS: usize = 10;
-
-pub struct IdleTimer {
-    pub cfg: IdleConfig,
-    pub start_time: Instant,
-    pub last_activity: Instant,
-    pub debounce_until: Option<Instant>,
-    pub paused: bool,
-    pub manually_paused: bool,
-    pub resume_command: Option<String>,
+pub struct LegacyIdleTimer {
+    pub(crate) cfg: IdleConfig,
+    pub(crate) last_activity: Instant,
+    pub(crate) debounce_until: Option<Instant>,
+    pub(crate) idle_debounce_until: Option<Instant>,
+    pub(crate) paused: bool,
+    pub(crate) manually_paused: bool,
+    pub(crate) resume_command: Option<String>,
+    pub(crate) previous_brightness: Option<BrightnessState>,
+    pub(crate) suspend_occurred: bool,
+    pub(crate) spawned_tasks: Vec<JoinHandle<()>>,
+    pub(crate) is_idle_flags: Vec<bool>,
+    pub(crate) active_kinds: HashSet<String>,
     pub on_ac: bool,
+    pub start_time: Instant,
+    idle_task_handle: Option<JoinHandle<()>>,
     actions: Vec<IdleAction>,
     ac_actions: Vec<IdleAction>,
     battery_actions: Vec<IdleAction>,
     pre_suspend_command: Option<String>,
-    is_idle_flags: Vec<bool>,
     compositor_managed: bool,
-    active_kinds: HashSet<String>,
-    previous_brightness: Option<BrightnessState>,
-    suspend_occurred: bool,
-    spawned_tasks: Vec<JoinHandle<()>>,
-    idle_task_handle: Option<JoinHandle<()>>,
 }
 
-impl IdleTimer {
+impl LegacyIdleTimer {
     pub fn new(cfg: &IdleConfig) -> Self {
         let on_ac = true;
 
@@ -74,6 +75,7 @@ impl IdleTimer {
             start_time: now,
             last_activity: now,
             debounce_until: None,
+            idle_debounce_until: None,
             actions,
             ac_actions,
             battery_actions,
@@ -134,37 +136,25 @@ impl IdleTimer {
                     }
                 }
 
-                let requests = crate::actions::prepare_action(&action).await;
+                let requests = super::actions::prepare_action(&action).await;
                 for req in requests {
                     match req {
-                        crate::actions::ActionRequest::PreSuspend => {
+                        super::actions::ActionRequest::PreSuspend => {
                             self.trigger_pre_suspend(false, false).await;
                         }
-                        crate::actions::ActionRequest::RunCommand(cmd) => {
+                        super::actions::ActionRequest::RunCommand(cmd) => {
                             let cmd_clone = cmd.clone();
-                            self.spawn_task_limited(async move {
-                                if let Err(e) = crate::actions::run_command_silent(&cmd_clone).await {
+                            spawn_task_limited(&mut self.spawned_tasks, async move {
+                                if let Err(e) = super::actions::run_command_silent(&cmd_clone).await {
                                     log_error_message(&format!("Failed to run command '{}': {}", cmd_clone, e));
                                 }
                             });
                         }
-                        crate::actions::ActionRequest::Skip(_) => {}
+                        super::actions::ActionRequest::Skip(_) => {}
                     }
                 }
             }
         })
-    }
-
-    pub fn is_manually_inhibited(&self) -> bool {
-        self.manually_paused
-    }
-
-    pub async fn set_manual_inhibit(&mut self, inhibit: bool) {
-        if inhibit {
-            self.pause(true);
-        } else {
-            self.resume(true);
-        }
     }
 
     pub async fn check_idle(&mut self) {
@@ -172,10 +162,10 @@ impl IdleTimer {
             return;
         }
 
-        // handle debounce first
+        // post-activity debounce (unchanged)
         if let Some(until) = self.debounce_until {
             if Instant::now() < until {
-                return; // still debouncing, skip idle checks
+                return;
             } else {
                 self.debounce_until = None;
             }
@@ -192,7 +182,24 @@ impl IdleTimer {
                 continue;
             }
 
-            if elapsed >= Duration::from_secs(action.timeout_seconds) {
+            let timeout = Duration::from_secs(action.timeout_seconds);
+
+            if elapsed >= timeout {
+                // ---- idle debounce handling (one-shot) ----
+                if let Some(until) = self.idle_debounce_until {
+                    if Instant::now() < until {
+                        return;
+                    } else {
+                        self.idle_debounce_until = None;
+                    }
+                } else {
+                    // first time we crossed the threshold: start the one-shot debounce
+                    let debounce_delay = Duration::from_secs(self.cfg.debounce_seconds as u64);
+                    self.idle_debounce_until = Some(Instant::now() + debounce_delay);
+                    return;
+                }
+
+                // ---- actual triggering (debounce expired) ----
                 self.is_idle_flags[i] = true;
                 self.active_kinds.insert(key.clone());
 
@@ -202,79 +209,29 @@ impl IdleTimer {
                     }
                 }
 
-                let requests = crate::actions::prepare_action(action).await;
+                let requests = super::actions::prepare_action(action).await;
                 for req in requests {
                     match req {
-                        crate::actions::ActionRequest::PreSuspend => {
+                        super::actions::ActionRequest::PreSuspend => {
                             self.trigger_pre_suspend(false, false).await;
                         }
-                        crate::actions::ActionRequest::RunCommand(cmd) => {
+                        super::actions::ActionRequest::RunCommand(cmd) => {
                             let cmd_clone = cmd.clone();
-                            self.spawn_task_limited(async move {
-                                if let Err(e) = crate::actions::run_command_silent(&cmd_clone).await {
+                            spawn_task_limited(&mut self.spawned_tasks, async move {
+                                if let Err(e) = super::actions::run_command_silent(&cmd_clone).await {
                                     log_error_message(&format!("Failed to run command '{}': {}", cmd_clone, e));
                                 }
                             });
                         }
-                        crate::actions::ActionRequest::Skip(_) => {}
+                        super::actions::ActionRequest::Skip(_) => {}
                     }
                 }
-
             }
         }
 
-        self.cleanup_tasks();
+        cleanup_tasks(&mut self.spawned_tasks);
     }
 
-    pub fn reset(&mut self) {
-        self.last_activity = Instant::now();
-        self.apply_reset();
-
-        let debounce_delay = Duration::from_secs(3);
-        self.debounce_until = Some(Instant::now() + debounce_delay);
-    }
-
-    fn apply_reset(&mut self) {
-        let was_idle = self.is_idle_flags.iter().any(|&b| b);
-        self.last_activity = Instant::now();
-        self.cleanup_tasks();
-        self.is_idle_flags.fill(false);
-
-        if was_idle {
-            if let Some(state) = &self.previous_brightness {
-                restore_brightness(state);
-            }
-
-            if self.suspend_occurred {
-                if let Some(cmd) = &self.resume_command {
-                    let cmd_clone = cmd.clone();
-                    self.spawn_task_limited(async move {
-                        let _ = crate::actions::run_command_silent(&cmd_clone).await;
-                    });
-                }
-                self.suspend_occurred = false;
-            }
-        }
-
-        self.active_kinds.clear();
-        self.previous_brightness = None;
-    }
-
-    pub fn spawn_task_limited<F>(&mut self, fut: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        self.cleanup_tasks();
-        if self.spawned_tasks.len() < MAX_SPAWNED_TASKS {
-            self.spawned_tasks.push(tokio::spawn(fut));
-        } else {
-            log_message("Max spawned tasks reached, skipping task spawn");
-        }
-    }
-
-    fn cleanup_tasks(&mut self) {
-        self.spawned_tasks.retain(|h| !h.is_finished());
-    }
 
     pub async fn update_power_source(&mut self, on_ac: bool) {
         if self.on_ac == on_ac {
@@ -282,7 +239,7 @@ impl IdleTimer {
         }
 
         self.on_ac = on_ac;
-        self.cleanup_tasks();
+        cleanup_tasks(&mut self.spawned_tasks);
 
         if let Some(state) = self.previous_brightness.take() {
             restore_brightness(&state);
@@ -299,21 +256,21 @@ impl IdleTimer {
             if !self.is_idle_flags[i] {
                 self.is_idle_flags[i] = true;
                 let action = self.actions[i].clone();                
-                let requests = crate::actions::prepare_action(&action).await;
+                let requests = super::actions::prepare_action(&action).await;
                 for req in requests {
                     match req {
-                        crate::actions::ActionRequest::PreSuspend => {
+                        super::actions::ActionRequest::PreSuspend => {
                             self.trigger_pre_suspend(false, false).await;
                         }
-                        crate::actions::ActionRequest::RunCommand(cmd) => {
+                        super::actions::ActionRequest::RunCommand(cmd) => {
                             let cmd_clone = cmd.clone();
-                            self.spawn_task_limited(async move {
-                                if let Err(e) = crate::actions::run_command_silent(&cmd_clone).await {
+                            spawn_task_limited(&mut self.spawned_tasks, async move {
+                                if let Err(e) = super::actions::run_command_silent(&cmd_clone).await {
                                     log_error_message(&format!("Failed to run command '{}': {}", cmd_clone, e));
                                 }
                             });
                         }
-                        crate::actions::ActionRequest::Skip(_) => {}
+                        super::actions::ActionRequest::Skip(_) => {}
                     }
                 }
 
@@ -339,95 +296,7 @@ impl IdleTimer {
             }
         }
     }
-
-    pub fn pause(&mut self, manually: bool) {
-        if manually {
-            self.manually_paused = true;
-            self.paused = false; // Clear automatic pause when manually pausing
-            log_message("Idle timers manually paused");
-        } else {
-            // Don't auto-pause if manually paused
-            if !self.manually_paused {
-                self.paused = true;
-                log_message("Idle timers automatically paused");
-            } else {
-                // Silently ignore automatic pause when manually paused
-            }
-        }
-    }
-
-    pub fn resume(&mut self, manually: bool) {
-        if manually {
-            if self.manually_paused {
-                self.manually_paused = false;
-                self.paused = false; // Also clear automatic pause
-                log_message("Idle timers manually resumed");
-                
-                // Reset idle state when manually resuming
-                let was_idle = self.is_idle_flags.iter().any(|&b| b);
-                self.last_activity = Instant::now();
-                self.cleanup_tasks();
-                self.is_idle_flags.fill(false);
-
-                if was_idle {
-                    if let Some(state) = &self.previous_brightness {
-                        restore_brightness(state);
-                    }
-
-                    if let Some(cmd) = &self.resume_command {
-                        let cmd_clone = cmd.clone();
-                        self.spawn_task_limited(async move {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            let _ = crate::actions::run_command_silent(&cmd_clone).await;
-                        });
-                    }
-                }
-
-                self.active_kinds.clear();
-                self.previous_brightness = None;
-            }
-        } else {
-            // Don't auto-resume if manually paused
-            if !self.manually_paused && self.paused {
-                self.paused = false;
-                log_message("Idle timers automatically resumed");
-                
-                // Reset idle state when automatically resuming
-                let was_idle = self.is_idle_flags.iter().any(|&b| b);
-                self.last_activity = Instant::now();
-                self.cleanup_tasks();
-                self.is_idle_flags.fill(false);
-
-                if was_idle {
-                    if let Some(state) = &self.previous_brightness {
-                        restore_brightness(state);
-                    }
-
-                    if let Some(cmd) = &self.resume_command {
-                        let cmd_clone = cmd.clone();
-                        self.spawn_task_limited(async move {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            let _ = crate::actions::run_command_silent(&cmd_clone).await;
-                        });
-                    }
-                }
-
-                self.active_kinds.clear();
-                self.previous_brightness = None;
-            } else {
-                // Silently ignore automatic resume when manually paused
-            }
-        }
-    }
-
-    pub fn set_compositor_managed(&mut self, value: bool) {
-        self.compositor_managed = value;
-    }
-
-    pub fn is_compositor_managed(&self) -> bool {
-        self.compositor_managed
-    }
-
+ 
     pub fn shortest_timeout(&self) -> Duration {
         self.actions
             .iter()
@@ -437,12 +306,14 @@ impl IdleTimer {
             .unwrap_or_else(|| Duration::from_secs(60))
     }
 
-    pub fn mark_all_idle(&mut self) {
-        self.is_idle_flags.fill(true);
-    }
+    pub fn set_compositor_managed(&mut self, value: bool) { self.compositor_managed = value; }
+
+    pub fn is_compositor_managed(&self) -> bool { self.compositor_managed }
+
+    pub fn mark_all_idle(&mut self) { self.is_idle_flags.fill(true); }
 
     pub async fn update_from_config(&mut self, cfg: &IdleConfig) {
-        self.cleanup_tasks();
+        cleanup_tasks(&mut self.spawned_tasks);
 
         let default_actions: Vec<_> = cfg
             .actions
@@ -498,31 +369,8 @@ impl IdleTimer {
     }
 }
 
-fn run_pre_suspend_sync(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::Command;
-    use std::time::{Duration, Instant};
-
-    let mut child = Command::new("sh").arg("-c").arg(cmd).spawn()?;
-    let timeout = Duration::from_secs(5);
-    let start = Instant::now();
-
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                return Err(format!("Command exited with status: {}", status).into());
-            }
-            return Ok(());
-        }
-        if start.elapsed() > timeout {
-            child.kill()?;
-            return Err("Pre-suspend command timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// Spawn main idle monitor task
-pub async fn spawn_idle_task(idle_timer: Arc<Mutex<IdleTimer>>) -> JoinHandle<()> {
+pub async fn spawn_idle_task(idle_timer: Arc<Mutex<LegacyIdleTimer>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
 

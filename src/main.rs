@@ -1,28 +1,21 @@
-use std::{fs, path::PathBuf, sync::Arc, time::Duration};
-
+use std::{fs, path::PathBuf};
+use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use eyre::Result;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::task::LocalSet;
 use tokio::sync::Mutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-mod actions;
-mod app_inhibit;
-mod brightness;
+mod core;
 mod config;
-mod idle_timer;
-mod input;
 mod ipc;
 mod log;
-mod media;
-mod power_detection;
-mod suspend;
 mod utils;
-mod wayland;
+mod services;
 
 use log::{log_message, log_error_message, set_verbose};
-use crate::wayland::{WaylandIdleData, setup as setup_wayland};
+use crate::services::wayland::{WaylandIdleData, setup as setup_wayland};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -148,8 +141,6 @@ async fn main() -> Result<()> {
         eyre::eyre!("Failed to bind control socket. Another instance may be running.")
     })?;
 
-    setup_cleanup_handler();
-
     // --- Load config ---
     let config_path = args.config.unwrap_or(get_config_path()?);
     if args.verbose {
@@ -157,63 +148,27 @@ async fn main() -> Result<()> {
         set_verbose(true);
     }
     let cfg = Arc::new(config::load_config(config_path.to_str().unwrap())?);
-    let idle_timer = Arc::new(Mutex::new(idle_timer::IdleTimer::new(&cfg)));
+    let idle_timer = Arc::new(Mutex::new(core::build_idle_timer(&cfg)));
     idle_timer.lock().await.init().await;
 
     // --- Spawn background tasks ---
-    idle_timer::spawn_idle_task(Arc::clone(&idle_timer)).await;
-    input::spawn_input_task(Arc::clone(&idle_timer));
+    core::legacy::timer::spawn_idle_task(Arc::clone(&idle_timer)).await;
+    services::input::spawn_input_task(Arc::clone(&idle_timer));
 
     // --- Spawn suspend event listener ---
     let lid_idle_timer = Arc::clone(&idle_timer);
     tokio::spawn(async move {
-        if let Err(e) = suspend::listen_for_suspend_events(lid_idle_timer).await {
+        if let Err(e) = services::suspend::listen_for_suspend_events(lid_idle_timer).await {
             log_error_message(&format!("D-Bus suspend event listener failed: {}", e));
         }
     });
-
+ 
     // AC/Battery Detection
     let idle_clone = Arc::clone(&idle_timer);
-    tokio::spawn(async move {
-        // Detect laptop or desktop
-        let is_laptop = crate::utils::is_laptop();
-
-        // Detect initial power state and log it
-        let last_on_ac = crate::power_detection::detect_initial_power_state(is_laptop);
-
-        // Set initial state in IdleTimer
-        {
-            let mut timer = idle_clone.lock().await;
-            timer.on_ac = last_on_ac;
-        }
-
-        // Poll every 5 seconds (or any interval you want)
-        let mut ticker = tokio::time::interval(Duration::from_secs(5));
-        let mut last_on_ac = last_on_ac;
-        loop {
-            ticker.tick().await;
-
-            // Skip desktop (always AC)
-            if !is_laptop {
-                continue;
-            }
-
-            // Check current AC state
-            let on_ac = crate::power_detection::is_on_ac_power(is_laptop);
-
-            // Only update if state changed
-            if on_ac != last_on_ac {
-                last_on_ac = on_ac;
-                log_message(&format!("Power source changed: {}", if on_ac { "AC" } else { "Battery" }));
-
-                // Update IdleTimer
-                idle_clone.lock().await.update_power_source(on_ac).await;
-            }
-        }
-    });
+    tokio::spawn(services::power_detection::spawn_power_monitor(idle_clone));
 
     // --- Spawn app inhibit task ---
-    let app_inhibitor = app_inhibit::spawn_app_inhibit_task(
+    let app_inhibitor = services::app_inhibit::spawn_app_inhibit_task(
         Arc::clone(&idle_timer),
         Arc::clone(&cfg)
     );
@@ -236,11 +191,14 @@ async fn main() -> Result<()> {
         Arc::clone(&app_inhibitor),
     ).await;
 
+    // --- Setup panic handler only ---
+    setup_panic_handler();
+
     // --- Run main async tasks ---
     let local = LocalSet::new();
     local.run_until(async {
         if cfg.monitor_media {
-            media::spawn_media_monitor(Arc::clone(&idle_timer))?;
+            services::media::spawn_media_monitor(Arc::clone(&idle_timer))?;
         }
         log_message(&format!("Running. Idle actions loaded: {}", cfg.actions.len()));
         std::future::pending::<()>().await;
@@ -251,19 +209,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Cleanup socket on exit or panic
-fn setup_cleanup_handler() {
+/// Cleanup socket on panic only (signals handled by tokio)
+fn setup_panic_handler() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
     if CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
-
-    let _ = ctrlc::set_handler(move || {
-        let _ = fs::remove_file(SOCKET_PATH);
-        std::process::exit(0);
-    });
 
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -289,9 +242,9 @@ fn get_config_path() -> Result<PathBuf> {
 
 /// Async shutdown handler (Ctrl+C / SIGTERM)
 async fn setup_shutdown_handler(
-    idle_timer: Arc<Mutex<idle_timer::IdleTimer>>,
+    idle_timer: Arc<Mutex<core::legacy::timer::LegacyIdleTimer>>,
     wl_data: Arc<Mutex<WaylandIdleData>>,
-    app_inhibitor: Arc<Mutex<app_inhibit::AppInhibitor>>,
+    app_inhibitor: Arc<Mutex<services::app_inhibit::AppInhibitor>>,
 ) {
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
@@ -302,8 +255,12 @@ async fn setup_shutdown_handler(
         let app_inhibitor = Arc::clone(&app_inhibitor);
         async move {
             tokio::select! {
-                _ = sigint.recv() => log_message("Received SIGINT, shutting down..."),
-                _ = sigterm.recv() => log_message("Received SIGTERM, shutting down..."),
+                _ = sigint.recv() => {
+                    log_message("Received SIGINT, shutting down...");
+                },
+                _ = sigterm.recv() => {
+                    log_message("Received SIGTERM, shutting down...");
+                },
             }
 
             // Shutdown idle timer
@@ -320,6 +277,7 @@ async fn setup_shutdown_handler(
             shutdown_notify.notify_waiters();
 
             let _ = std::fs::remove_file(SOCKET_PATH);
+            log_message("Shutdown complete");
             std::process::exit(0);
         }
     });

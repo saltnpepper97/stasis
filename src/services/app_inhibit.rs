@@ -6,6 +6,7 @@ use sysinfo::{System, RefreshKind, ProcessRefreshKind, ProcessesToUpdate};
 
 use crate::config::IdleConfig;
 use crate::log::log_message;
+use crate::core::legacy::timer::LegacyIdleTimer;
 
 /// Tracks currently running apps to inhibit idle
 pub struct AppInhibitor {
@@ -15,11 +16,11 @@ pub struct AppInhibitor {
     desktop: String,
     checks_since_reset: u32,
     #[allow(dead_code)]
-    idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
+    idle_timer: Arc<Mutex<LegacyIdleTimer>>,
 }
 
 impl AppInhibitor {
-    pub fn new(cfg: Arc<IdleConfig>, idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>) -> Self {
+    pub fn new(cfg: Arc<IdleConfig>, idle_timer: Arc<Mutex<LegacyIdleTimer>>) -> Self {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
             .to_lowercase();
@@ -192,7 +193,7 @@ impl AppInhibitor {
 }
 
 pub fn spawn_app_inhibit_task(
-    idle_timer: Arc<Mutex<crate::idle_timer::IdleTimer>>,
+    idle_timer: Arc<Mutex<LegacyIdleTimer>>,
     cfg: Arc<IdleConfig>
 ) -> Arc<Mutex<AppInhibitor>> {
     let inhibitor = Arc::new(Mutex::new(AppInhibitor::new(cfg, Arc::clone(&idle_timer))));

@@ -28,7 +28,6 @@ pub async fn prepare_action(action: &IdleAction) -> Vec<ActionRequest> {
         }
 
         IdleActionKind::LockScreen => {
-            // TODO: Might Change this in the future
             if is_process_running(&cmd).await {
                 log_message("Lockscreen already running, skipping action.");
                 vec![ActionRequest::Skip(cmd)]

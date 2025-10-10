@@ -2,7 +2,7 @@ use eyre::Result;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::idle_timer::IdleTimer;
+use crate::core::legacy::timer::LegacyIdleTimer;
 use crate::log::{log_error_message, log_message};
 
 use tokio::sync::Notify;
@@ -23,7 +23,7 @@ use wayland_protocols::wp::idle_inhibit::zv1::client::{
 
 /// Holds Wayland idle state and handles integration with IdleTimer
 pub struct WaylandIdleData {
-    pub idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
+    pub idle_timer: Arc<tokio::sync::Mutex<LegacyIdleTimer>>,
     pub idle_notifier: Option<ExtIdleNotifierV1>,
     pub seat: Option<WlSeat>,
     pub notification: Option<ExtIdleNotificationV1>,
@@ -34,7 +34,7 @@ pub struct WaylandIdleData {
 }
 
 impl WaylandIdleData {
-    pub fn new(idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>, respect_inhibitors: bool) -> Self {
+    pub fn new(idle_timer: Arc<tokio::sync::Mutex<LegacyIdleTimer>>, respect_inhibitors: bool) -> Self {
         Self {
             idle_timer,
             idle_notifier: None,
@@ -177,7 +177,7 @@ impl Dispatch<WlSeat, ()> for WaylandIdleData {
 
 /// Setup Wayland idle detection
 pub async fn setup(
-    idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
+    idle_timer: Arc<tokio::sync::Mutex<LegacyIdleTimer>>,
     respect_inhibitors: bool,
 ) -> Result<Arc<tokio::sync::Mutex<WaylandIdleData>>> {
     log_message(&format!("Setting up Wayland idle detection (respect_inhibitors={})", respect_inhibitors));

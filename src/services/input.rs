@@ -1,13 +1,17 @@
-use std::sync::Arc;
-use std::time::Duration;
-use std::os::unix::fs::OpenOptionsExt;
-use std::fs::OpenOptions;
-use std::os::unix::io::AsRawFd;
+use std::{
+    fs::OpenOptions,
+    os::unix::{
+        fs::OpenOptionsExt,
+        io::{AsRawFd, OwnedFd},
+    },
+    sync::Arc,
+    time::Duration,
+};
 use input::{Libinput, LibinputInterface};
 use input::event::Event;
 use tokio::sync::Mutex;
 
-use crate::idle_timer::IdleTimer;
+use crate::core::legacy::timer::LegacyIdleTimer;
 
 /// Minimal libinput interface
 struct MyInterface;
@@ -17,7 +21,7 @@ impl LibinputInterface for MyInterface {
         &mut self,
         path: &std::path::Path,
         flags: i32,
-    ) -> Result<std::os::unix::io::OwnedFd, i32> {
+    ) -> Result<OwnedFd, i32> {
         std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -27,14 +31,14 @@ impl LibinputInterface for MyInterface {
             .map_err(|_| -1)
     }
 
-    fn close_restricted(&mut self, fd: std::os::unix::io::OwnedFd) {
+    fn close_restricted(&mut self, fd: OwnedFd) {
         drop(fd)
     }
 }
 
 /// Spawn a blocking task that watches libinput events
 /// and resets the IdleTimer when input occurs.
-pub fn spawn_input_task(idle_timer: Arc<Mutex<IdleTimer>>) {
+pub fn spawn_input_task(idle_timer: Arc<Mutex<LegacyIdleTimer>>) {
     let idle_timer_clone = Arc::clone(&idle_timer);
 
     tokio::task::spawn_blocking(move || {

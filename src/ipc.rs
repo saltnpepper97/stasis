@@ -3,16 +3,16 @@ use tokio::net::UnixListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
-    app_inhibit::AppInhibitor,
+    services::app_inhibit::AppInhibitor,
     config,
-    idle_timer::IdleTimer,
+    core::legacy::timer::LegacyIdleTimer,
     log::{log_error_message, log_message},
     SOCKET_PATH,
 };
 
 /// Spawn the control socket task using a pre-bound listener
 pub async fn spawn_control_socket_with_listener(
-    idle_timer: Arc<tokio::sync::Mutex<IdleTimer>>,
+    idle_timer: Arc<tokio::sync::Mutex<LegacyIdleTimer>>,
     app_inhibitor: Arc<tokio::sync::Mutex<AppInhibitor>>,
     cfg_path: String,
     listener: UnixListener,
@@ -39,13 +39,11 @@ pub async fn spawn_control_socket_with_listener(
                         "pause" => {
                             let mut timer = idle_timer.lock().await;
                             timer.pause(true);
-                            log_message("Idle timers paused");
                         }
 
                         "resume" => {
                             let mut timer = idle_timer.lock().await;
                             timer.resume(true);
-                            log_message("Idle timers resumed");
                         }
 
                         "trigger_idle" => {
