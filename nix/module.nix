@@ -27,6 +27,7 @@ let
   baseServicePathPkgs = with pkgs; [
     bashInteractive
     coreutils
+    libnotify
     systemd
     pulseaudio
   ];
