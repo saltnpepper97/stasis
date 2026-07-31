@@ -136,45 +136,33 @@ Build & install:
 
 ## Quick Start
 
-> [!NOTE]
-> **Screen-lock tracking.**
-> Stasis uses the configured locker process as a compatibility fallback: a
-> foreground locker is considered locked until that process exits. When the
-> compositor or locker publishes login1's `LockedHint`, Stasis automatically
-> promotes the episode to system tracking and follows `LockedHint` through the
-> real unlock instead.
->
-> This supports foreground lockers and service-backed lockers such as Veila
-> without per-locker configuration. A locker that forks into the background and
-> does not publish `LockedHint` cannot expose a reliable unlock state; run that
-> locker in the foreground instead.
->
-> login1's `Lock` and `Unlock` signals are requests, not confirmation that the
-> session finished locking or unlocking. `enable_loginctl_integration` therefore
-> does not select the lock-tracking method; it enables optional login1
-> sleep/wake integration.
+Start the daemon:
+
+    stasis
+
+The full quick-start guide, configuration reference, and integration examples
+are available at https://saltnpepper97.github.io/stasis-site/.
+
+### Screen-lock tracking
+
+Stasis automatically chooses the strongest lock-state source available:
+
+- A foreground locker is tracked until its process exits.
+- A positive login1 `LockedHint` takes authority for that lock episode and is
+  followed until the real unlock. This supports service-backed lockers such as
+  Veila without locker-specific configuration.
+- A locker that forks into the background without publishing `LockedHint`
+  cannot expose a reliable unlock state and should be run in the foreground.
+
+login1 `Lock` and `Unlock` signals are requests rather than completed state.
+`enable_loginctl_integration` therefore controls optional login1 sleep/wake
+integration, not the lock-tracking method. `LockedHint` monitoring is automatic
+through the login1 interface provided by systemd-logind and eLogind.
 
 > [!IMPORTANT]
 > **D-Bus session startup is required for full D-Bus features.**
 > If you want `enable_dbus_inhibit` and other session-bus driven behavior to work reliably, start your compositor within a real D-Bus session (for example `niri-session`, `dbus-run-session`, or your compositor/distribution's recommended session launcher).
 > If the compositor is not running in a proper session, inhibit monitoring may not activate.
-
-> [!NOTE]
-> **login1 `LockedHint` integration.**
-> Stasis always monitors the session's `LockedHint` property through the
-> `org.freedesktop.login1` interface provided by systemd-logind or elogind. This
-> is independent of `enable_loginctl_integration`.
->
-> `LockedHint` support currently requires a Quickshell build that actually sets the property:
-> - **`quickshell-lockhinted-git`** (AUR) is the supported option for now.
-> - **Noctalia's fork** and other Quickshell-based projects might also expose `LockedHint`, but they have not been tested with Stasis yet. Let us know if you try one.
-
-Start the daemon:
-
-    stasis
-
-Full quick start guide, configuration examples, and documentation:  
-https://saltnpepper97.github.io/stasis-site/
 
 ---
 
