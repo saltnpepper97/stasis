@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop bootstrap configs now include the hardware low-power settings already
   present in the laptop template.
 - Builds targeting musl libc no longer link against glibc's `malloc_trim`.
+- The NixOS service now includes `libnotify` in its runtime path so generated
+  desktop notifications can invoke `notify-send`.
 - Lock tracking now treats a positive login1 `LockedHint` as authoritative for
   that episode, preventing short-lived clients such as `veila lock --wait-ready`
   from producing a false unlock when they exit. Foreground process lifetime
