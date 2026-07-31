@@ -28,14 +28,14 @@ Global keys live directly under a config block (typically \fBdefault:\fR or a pr
 
 .TP
 .B enable_loginctl_integration true|false
-Controls whether Stasis integrates with logind/session state to \fItrack\fR
-lock/unlock and related session state for internal scheduling and scripting semantics.
+Controls optional login1 sleep/wake integration through systemd-logind or elogind.
 .PP
-When enabled, Stasis subscribes to logind's \fBLock\fR and \fBUnlock\fR signals on
-the session object, and to \fBPrepareForSleep\fR on the login1 manager.
+When enabled, Stasis subscribes to \fBPrepareForSleep\fR on the login1 manager.
+The existing key name is retained for configuration compatibility.
 .PP
-\fBNote:\fR logind's \fBLockedHint\fR property is tracked \fIseparately\fR and
-always-on (see below); it does not require this flag.
+\fBNote:\fR login1's \fBLockedHint\fR property is tracked \fIseparately\fR and
+automatically (see below); it does not require this flag. The login1 \fBLock\fR
+and \fBUnlock\fR signals are requests, not completed lock-state notifications.
 .PP
 \fBImportant:\fR this does \fInot\fR lock your screen. Locking the screen is always
 done by your configured \fBlock_screen\fR step \fBcommand\fR (e.g. \fBhyprlock\fR) if you set one.
@@ -188,8 +188,12 @@ watches it for changes via \fBPropertiesChanged\fR. Compositors or lock screens
 that set \fBLockedHint\fR (e.g. a Quickshell fork with the lockhint feature) are
 tracked without requiring \fBenable_loginctl_integration\fR.
 .IP \(bu 2
-If \fBenable_loginctl_integration true\fR, Stasis additionally tracks logind's
-\fBLock\fR and \fBUnlock\fR signals for session lock state.
+The configured locker process is the compatibility fallback. If
+\fBLockedHint=true\fR confirms the episode, Stasis follows \fBLockedHint\fR and
+does not treat an early locker-client exit as an unlock.
+.IP \(bu 2
+A locker that forks into the background without publishing \fBLockedHint\fR
+cannot expose a reliable unlock state and should be run in the foreground.
 .IP \(bu 2
 Lock behavior is lock-centric: if the session is already locked when the lock step
 would run, Stasis advances past it without re-running it.

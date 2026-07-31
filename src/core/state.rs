@@ -50,6 +50,9 @@ pub struct State {
 
     // Session / profile
     is_locked: bool,
+    // A positive login1 LockedHint promotes the current lock episode away
+    // from process-lifetime fallback until LockedHint reports false.
+    system_lock_confirmed: bool,
     // None means "default" (no profile overlay)
     active_profile: Option<String>,
 
@@ -111,6 +114,7 @@ impl State {
             debounce_pending: true, // boot behaves like "fresh idle cycle"
 
             is_locked: false,
+            system_lock_confirmed: false,
             // Default profile is represented by None (profile selection is IPC-only).
             active_profile: None,
 
@@ -327,6 +331,10 @@ impl State {
         self.is_locked
     }
 
+    pub fn system_lock_confirmed(&self) -> bool {
+        self.system_lock_confirmed
+    }
+
     pub fn active_profile(&self) -> Option<&str> {
         self.active_profile.as_deref()
     }
@@ -391,6 +399,10 @@ impl State {
 
     pub fn set_locked(&mut self, v: bool) {
         self.is_locked = v;
+    }
+
+    pub fn set_system_lock_confirmed(&mut self, v: bool) {
+        self.system_lock_confirmed = v;
     }
 
     pub fn set_active_profile(&mut self, name: Option<String>) {

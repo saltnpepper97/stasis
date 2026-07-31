@@ -3,7 +3,7 @@
 
 use crate::core::action::Action;
 use crate::core::config::{Config, ConfigFile, PlanSource, PlanStep, PlanStepKind};
-use crate::core::events::{ActivityKind, Event};
+use crate::core::events::{ActivityKind, Event, LockSource};
 use crate::core::manager::Manager;
 use crate::core::state::State;
 
@@ -144,6 +144,151 @@ fn lock_step_skipped_if_already_locked() {
         .unwrap();
 
     assert_eq!(actions.len(), 1);
+}
+
+#[test]
+fn locked_hint_keeps_veila_episode_locked_after_client_exit() {
+    let plan = vec![
+        step(PlanStepKind::LockScreen, 1, "veila lock --wait-ready"),
+        step(PlanStepKind::Dpms, 1, "dpms"),
+    ];
+
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    state.set_plan_source(PlanSource::Desktop);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+        .unwrap();
+    assert_eq!(
+        actions,
+        vec![Action::RunLockScreen {
+            command: "veila lock --wait-ready".to_string()
+        }]
+    );
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionLocked {
+            source: LockSource::LockerProcess,
+            now_ms: 1_001,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::SessionLocked {
+            source: LockSource::LockedHint,
+            now_ms: 1_002,
+        },
+    )
+    .unwrap();
+
+    let actions = mgr
+        .handle_event(
+            &mut state,
+            Event::SessionUnlocked {
+                source: LockSource::LockerProcess,
+                now_ms: 1_003,
+            },
+        )
+        .unwrap();
+
+    assert!(actions.is_empty());
+    assert!(state.is_locked());
+    assert!(state.system_lock_confirmed());
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 2_000 })
+        .unwrap();
+    assert_eq!(
+        actions,
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+    assert!(state.is_locked());
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionUnlocked {
+            source: LockSource::LockedHint,
+            now_ms: 2_001,
+        },
+    )
+    .unwrap();
+
+    assert!(!state.is_locked());
+    assert!(!state.system_lock_confirmed());
+}
+
+#[test]
+fn foreground_locker_process_remains_the_fallback_authority() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![]));
+    let mut state = State::new(0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionLocked {
+            source: LockSource::LockerProcess,
+            now_ms: 1,
+        },
+    )
+    .unwrap();
+    assert!(state.is_locked());
+    assert!(!state.system_lock_confirmed());
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionUnlocked {
+            source: LockSource::LockedHint,
+            now_ms: 2,
+        },
+    )
+    .unwrap();
+    assert!(
+        state.is_locked(),
+        "unconfirmed LockedHint=false must not override process tracking"
+    );
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionUnlocked {
+            source: LockSource::LockerProcess,
+            now_ms: 3,
+        },
+    )
+    .unwrap();
+    assert!(!state.is_locked());
+}
+
+#[test]
+fn locked_hint_tracks_an_external_lock_without_a_locker_process() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![]));
+    let mut state = State::new(0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionLocked {
+            source: LockSource::LockedHint,
+            now_ms: 1,
+        },
+    )
+    .unwrap();
+    assert!(state.is_locked());
+    assert!(state.system_lock_confirmed());
+
+    mgr.handle_event(
+        &mut state,
+        Event::SessionUnlocked {
+            source: LockSource::LockedHint,
+            now_ms: 2,
+        },
+    )
+    .unwrap();
+    assert!(!state.is_locked());
+    assert!(!state.system_lock_confirmed());
 }
 
 #[test]

@@ -136,35 +136,23 @@ Build & install:
 
 ## Quick Start
 
-> [!WARNING]
-> **Screen lockers must not be configured to daemonize.**
-> Stasis tracks lock state by waiting for the screen locker process to exit. If your locker daemonizes (for example, `swaylock -f` or `daemonize = true`), it detaches from Stasis immediately. Stasis then treats the screen as unlocked and starts your plan over from the first step.
+> [!NOTE]
+> **Screen-lock tracking.**
+> Stasis uses the configured locker process as a compatibility fallback: a
+> foreground locker is considered locked until that process exits. When the
+> compositor or locker publishes login1's `LockedHint`, Stasis automatically
+> promotes the episode to system tracking and follows `LockedHint` through the
+> real unlock instead.
 >
-> You can confirm this with `stasis dump`. If the `resume` step fires almost immediately after `lock`, your locker is daemonizing.
+> This supports foreground lockers and service-backed lockers such as Veila
+> without per-locker configuration. A locker that forks into the background and
+> does not publish `LockedHint` cannot expose a reliable unlock state; run that
+> locker in the foreground instead.
 >
-> **Option 1: do not daemonize.** Remove `daemonize = true` or the `-f` flag from your screen locker config.
->
-> **Option 2: use `enable_loginctl_integration` for a daemonizing locker.**
-> Enable Stasis's `loginctl` mode so it tracks lock state via D-Bus signals from `logind` instead of process lifetime. This requires a small wrapper script:
-> ```bash
-> #!/usr/bin/env bash
-> # Tell logind we are locking (Stasis listens for this)
-> loginctl lock-session
-> # Run your locker in the background (daemonize/fork it)
-> swaylock -f
-> ```
-> Save this as `~/.local/bin/stasis-lock.sh` and make it executable (`chmod +x`). Then use it in your config:
-> ```rune
-> default:
->   enable_loginctl_integration true
->   
->   lock_screen:
->     timeout 300
->     command "~/.local/bin/stasis-lock.sh"
->   end
-> end
-> ```
-> This method is robust because it tracks the *session state*, not just a running process. It works perfectly even if your locker daemonizes or runs as a separate background service.
+> login1's `Lock` and `Unlock` signals are requests, not confirmation that the
+> session finished locking or unlocking. `enable_loginctl_integration` therefore
+> does not select the lock-tracking method; it enables optional login1
+> sleep/wake integration.
 
 > [!IMPORTANT]
 > **D-Bus session startup is required for full D-Bus features.**
@@ -172,8 +160,10 @@ Build & install:
 > If the compositor is not running in a proper session, inhibit monitoring may not activate.
 
 > [!NOTE]
-> **Quickshell `LockedHint` integration.**
-> Stasis always monitors logind's `LockedHint` session property and treats it as a lock-state signal, independent of `enable_loginctl_integration`. This is useful with compositors or lock screens that set `LockedHint` but do not emit logind `Lock`/`Unlock` signals.
+> **login1 `LockedHint` integration.**
+> Stasis always monitors the session's `LockedHint` property through the
+> `org.freedesktop.login1` interface provided by systemd-logind or elogind. This
+> is independent of `enable_loginctl_integration`.
 >
 > `LockedHint` support currently requires a Quickshell build that actually sets the property:
 > - **`quickshell-lockhinted-git`** (AUR) is the supported option for now.

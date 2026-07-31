@@ -5,7 +5,7 @@ use crate::core::{
     action::Action,
     config::{Config, PlanSource, PlanStep, PlanStepKind},
     error::{ConfigError, Error, StateError},
-    events::{Event, MediaState, PowerState},
+    events::{Event, LockSource, MediaState, PowerState},
     state::State,
 };
 
@@ -194,15 +194,44 @@ impl Manager {
                 }
             }
 
-            Event::SessionLocked { .. } => {
+            Event::SessionLocked { source, .. } => {
+                if source == LockSource::LockedHint {
+                    if !state.system_lock_confirmed() {
+                        eventline::debug!(
+                            "lock: login1 LockedHint confirmed; using system lock state"
+                        );
+                    }
+                    state.set_system_lock_confirmed(true);
+                }
+
                 if !state.is_locked() {
                     state.set_locked(true);
                     self.advance_past_lock_if_needed(state, &cfg);
                 }
             }
 
-            Event::SessionUnlocked { .. } => {
-                if state.is_locked() {
+            Event::SessionUnlocked { source, .. } => {
+                let should_unlock = match source {
+                    LockSource::LockerProcess if state.system_lock_confirmed() => {
+                        eventline::debug!(
+                            "lock: ignoring locker process exit while LockedHint remains true"
+                        );
+                        false
+                    }
+                    LockSource::LockedHint if !state.system_lock_confirmed() => {
+                        eventline::debug!(
+                            "lock: ignoring LockedHint=false without a confirmed hint-tracked episode"
+                        );
+                        false
+                    }
+                    LockSource::LockedHint => {
+                        state.set_system_lock_confirmed(false);
+                        true
+                    }
+                    LockSource::LockerProcess => true,
+                };
+
+                if should_unlock && state.is_locked() {
                     state.set_locked(false);
 
                     if state.take_resume_deferred_until_unlock() {

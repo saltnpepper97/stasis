@@ -130,7 +130,8 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
             // ---- parse default ----
             let mut cfg = Config::disabled();
 
-            // Global loginctl integration toggle (lock/unlock monitoring via login1).
+            // Global login1 sleep/wake integration toggle. Lock state uses
+            // always-on LockedHint plus process-lifetime fallback.
             cfg.enable_loginctl_integration =
                 rc.get_or("default.enable_loginctl_integration", false);
             // Session D-Bus inhibit monitor toggle.

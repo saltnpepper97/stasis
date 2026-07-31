@@ -9,6 +9,7 @@ use crate::core::{
 use tokio::sync::{mpsc, watch};
 
 use std::sync::Arc;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 use std::time::Duration;
 
 use crate::services::dbus::EventSink;
@@ -17,7 +18,7 @@ use super::{AnyError, Daemon, MpscEventSink};
 
 // `unsafe extern` is required as of Rust edition 2024.
 // Declared at module level so the linker resolves it at compile time.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
@@ -25,7 +26,7 @@ unsafe extern "C" {
 /// Periodically calls malloc_trim(0) to return fragmented heap pages back to
 /// the OS. Without this, RSS creeps upward as the allocator holds on to freed
 /// pages across poll cycles. Runs once per minute — effectively free.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn spawn_heap_trimmer() {
     tokio::spawn(async {
         loop {
@@ -37,7 +38,7 @@ fn spawn_heap_trimmer() {
     });
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn spawn_heap_trimmer() {}
 
 impl Daemon {
@@ -270,9 +271,11 @@ impl Daemon {
                                             self.publish_watch_state();
 
                                             if desired == "none" {
-                                                Ok("Reloaded (profile missing; switched to none)".to_string())
+                                                Ok("Configuration reloaded; using the base configuration.".to_string())
                                             } else {
-                                                Ok(format!("Reloaded (profile kept: {desired})"))
+                                                Ok(format!(
+                                                    "Configuration reloaded; profile '{desired}' remains active."
+                                                ))
                                             }
                                         }
                                         Err(e) => Err(format!("{e:?}")),

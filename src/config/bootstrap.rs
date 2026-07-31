@@ -56,9 +56,9 @@ fn default_laptop_config() -> String {
 #   unless a profile overlays/clears them.
 
 default:
-  # Optional: listen for loginctl lock/unlock-session signals (default false)
-  # NOTE: this only updates internal state when lock/unlock signals are received;
-  # it does not actually run your locker command.
+  # Optional: listen for login1 sleep/wake state (default false).
+  # Lock tracking uses LockedHint automatically, with the locker process as a
+  # fallback; this setting does not run or select your locker command.
   #enable_loginctl_integration true
 
   # Optional: listen for session D-Bus inhibit traffic (default true).
@@ -229,9 +229,9 @@ fn default_desktop_config() -> String {
 @description "Lightweight feature packed idle manager for Wayland"
 
 default:
-  # Optional: listen for loginctl lock/unlock-session signals (default false)
-  # NOTE: this only updates internal state when lock/unlock signals are received;
-  # it does not actually run your locker command.
+  # Optional: listen for login1 sleep/wake state (default false).
+  # Lock tracking uses LockedHint automatically, with the locker process as a
+  # fallback; this setting does not run or select your locker command.
   #enable_loginctl_integration true
 
   # Optional: listen for session D-Bus inhibit traffic (default true).
@@ -273,6 +273,24 @@ default:
     r"steam_app_.*"
   ]
 
+  # -----------------------------
+  # Hardware low-power mode
+  #
+  # After the DPMS (display-off) step fires, Stasis can apply conservative
+  # power-saving to supported hardware (GPU runtime PM, amdgpu DPM). Everything
+  # it changes is snapshotted and restored EXACTLY on any resume path.
+  #
+  # Requires write access to GPU sysfs power-control files. On most distros you
+  # need either elevated privileges or a udev rule, e.g.:
+  #   /etc/udev/rules.d/99-stasis-gpu-pm.rules:
+  #   SUBSYSTEM=="pci", KERNEL=="0000:01:00.0", ATTR{power/control}="auto"
+  # (adjust the PCI address to your GPU; check `lspci -D`)
+  #
+  # If Stasis can't write a file, it skips it and logs a message.
+  # -----------------------------
+  #low_power_when_idle false
+  #low_power_when_idle_timeout 10
+
   lock_screen:
     timeout 300 # 5 minute(s)
     command "swaylock"
@@ -297,4 +315,32 @@ end
 "#
     .trim_start()
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rune_cfg::RuneConfig;
+
+    fn assert_valid_low_power_template(contents: String) {
+        assert_eq!(contents.matches("#low_power_when_idle false").count(), 1);
+        assert_eq!(
+            contents.matches("#low_power_when_idle_timeout 10").count(),
+            1
+        );
+
+        let rc = RuneConfig::from_str(&contents).expect("bootstrap config should be valid Rune");
+        super::super::parse_config_file(&rc)
+            .expect("bootstrap config should satisfy the Stasis schema");
+    }
+
+    #[test]
+    fn laptop_template_includes_low_power_settings() {
+        assert_valid_low_power_template(default_laptop_config());
+    }
+
+    #[test]
+    fn desktop_template_includes_low_power_settings() {
+        assert_valid_low_power_template(default_desktop_config());
+    }
 }

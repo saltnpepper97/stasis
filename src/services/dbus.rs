@@ -10,7 +10,7 @@ use futures::StreamExt;
 use tokio::sync::{Mutex, watch};
 use zbus::{Connection, MatchRule, Proxy};
 
-use crate::core::events::Event;
+use crate::core::events::{Event, LockSource};
 
 /// Sink for pushing events into the (sync) manager loop.
 /// Implement this for whatever channel/queue you're using.
@@ -20,9 +20,12 @@ pub trait EventSink: Send + Sync + 'static {
 
 /// Spawn D-Bus listeners.
 ///
-/// `enable_loginctl_integration` gates all login1-related monitoring:
+/// `enable_loginctl_integration` gates optional login1 sleep monitoring:
 /// - PrepareForSleep (org.freedesktop.login1.Manager)
-/// - Lock/Unlock (org.freedesktop.login1.Session)
+///
+/// login1's Lock/Unlock signals are requests, not completed state changes, so
+/// they are not used for lock tracking. LockedHint state is monitored
+/// independently and automatically.
 ///
 /// `enable_dbus_inhibit` gates session-bus inhibit monitoring:
 /// - org.freedesktop.ScreenSaver Inhibit/UnInhibit
@@ -834,61 +837,8 @@ async fn run_dbus(
                     );
                 }
             }
-
-            match get_current_session_path(sys).await {
-                Ok(session_path) => {
-                    eventline::info!("D-Bus: monitoring session {}", session_path.as_str());
-
-                    match Proxy::new(
-                        sys,
-                        "org.freedesktop.login1",
-                        session_path,
-                        "org.freedesktop.login1.Session",
-                    )
-                    .await
-                    {
-                        Ok(proxy) => {
-                            let lock_stream = proxy.receive_signal("Lock").await;
-                            let unlock_stream = proxy.receive_signal("Unlock").await;
-
-                            match (lock_stream, unlock_stream) {
-                                (Ok(mut lock_stream), Ok(mut unlock_stream)) => {
-                                    let sink_lock = sink.clone();
-                                    tokio::spawn(async move {
-                                        while let Some(_) = lock_stream.next().await {
-                                            sink_lock
-                                                .push(Event::SessionLocked { now_ms: now_ms() });
-                                        }
-                                    });
-
-                                    let sink_unlock = sink.clone();
-                                    tokio::spawn(async move {
-                                        while let Some(_) = unlock_stream.next().await {
-                                            sink_unlock
-                                                .push(Event::SessionUnlocked { now_ms: now_ms() });
-                                        }
-                                    });
-                                }
-                                (Err(e), _) | (_, Err(e)) => {
-                                    eventline::warn!(
-                                        "D-Bus: could not subscribe to session Lock/Unlock: {e:?}"
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eventline::warn!("D-Bus: could not create session proxy: {e:?}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    eventline::warn!(
-                        "D-Bus: could not resolve session path for lock/unlock: {e:?}"
-                    );
-                }
-            }
         } else {
-            eventline::info!("D-Bus: loginctl integration disabled; skipping login1 monitoring");
+            eventline::info!("D-Bus: login1 integration disabled; skipping sleep/wake monitoring");
         }
 
         // Always-on LockedHint watcher. Independent of `enable_loginctl_integration`.
@@ -910,8 +860,17 @@ async fn run_dbus(
             .await
             {
                 match proxy.get_property::<bool>("LockedHint").await {
-                    Ok(true) => sink.push(Event::SessionLocked { now_ms: now_ms() }),
-                    Ok(false) => {}
+                    Ok(locked) => sink.push(if locked {
+                        Event::SessionLocked {
+                            source: LockSource::LockedHint,
+                            now_ms: now_ms(),
+                        }
+                    } else {
+                        Event::SessionUnlocked {
+                            source: LockSource::LockedHint,
+                            now_ms: now_ms(),
+                        }
+                    }),
                     Err(e) => {
                         eventline::warn!("D-Bus: could not read initial LockedHint: {e:?}");
                     }
@@ -952,9 +911,15 @@ async fn run_dbus(
                                     if let Ok(locked) = v.clone().downcast::<bool>() {
                                         let t = now_ms();
                                         sink_lockedhint.push(if locked {
-                                            Event::SessionLocked { now_ms: t }
+                                            Event::SessionLocked {
+                                                source: LockSource::LockedHint,
+                                                now_ms: t,
+                                            }
                                         } else {
-                                            Event::SessionUnlocked { now_ms: t }
+                                            Event::SessionUnlocked {
+                                                source: LockSource::LockedHint,
+                                                now_ms: t,
+                                            }
                                         });
                                     }
                                 }

@@ -18,6 +18,17 @@ pub enum PowerState {
     OnBattery,
 }
 
+/// Source of an observed session lock-state change.
+///
+/// Locker-process lifetime is the compatibility fallback. Once login1's
+/// `LockedHint` confirms a lock episode, the hint becomes authoritative until
+/// it reports the matching unlock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockSource {
+    LockerProcess,
+    LockedHint,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Tick {
@@ -73,9 +84,11 @@ pub enum Event {
     },
 
     SessionLocked {
+        source: LockSource,
         now_ms: u64,
     },
     SessionUnlocked {
+        source: LockSource,
         now_ms: u64,
     },
 
@@ -135,8 +148,8 @@ impl Event {
             | Event::PowerChanged { now_ms, .. }
             | Event::LidClosed { now_ms }
             | Event::LidOpened { now_ms }
-            | Event::SessionLocked { now_ms }
-            | Event::SessionUnlocked { now_ms }
+            | Event::SessionLocked { now_ms, .. }
+            | Event::SessionUnlocked { now_ms, .. }
             | Event::ManualPause { now_ms }
             | Event::ManualResume { now_ms }
             | Event::ManualTrigger { now_ms, .. }

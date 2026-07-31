@@ -2,7 +2,11 @@
 // License: GPL-3.0-only
 
 use super::{AnyError, Daemon};
-use crate::core::{action::Action, events::Event, manager_msg::ManagerMsg};
+use crate::core::{
+    action::Action,
+    events::{Event, LockSource},
+    manager_msg::ManagerMsg,
+};
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -135,9 +139,11 @@ impl Daemon {
 
     fn spawn_lock_screen(tx: mpsc::Sender<ManagerMsg>, command: String) {
         tokio::spawn(async move {
-            // Process-tracked mode: we are the source of truth for lock state.
+            // Process lifetime is the compatibility fallback. A positive
+            // login1 LockedHint can promote this episode to system tracking.
             let _ = tx
                 .send(ManagerMsg::Event(Event::SessionLocked {
+                    source: LockSource::LockerProcess,
                     now_ms: crate::core::utils::now_ms(),
                 }))
                 .await;
@@ -157,6 +163,7 @@ impl Daemon {
                     eventline::error!("lock spawn failed: {e}");
                     let _ = tx
                         .send(ManagerMsg::Event(Event::SessionUnlocked {
+                            source: LockSource::LockerProcess,
                             now_ms: crate::core::utils::now_ms(),
                         }))
                         .await;
@@ -168,6 +175,7 @@ impl Daemon {
 
             let _ = tx
                 .send(ManagerMsg::Event(Event::SessionUnlocked {
+                    source: LockSource::LockerProcess,
                     now_ms: crate::core::utils::now_ms(),
                 }))
                 .await;

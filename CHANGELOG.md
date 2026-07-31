@@ -3,6 +3,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-07-30
+
+### Fixed
+
+- Desktop bootstrap configs now include the hardware low-power settings already
+  present in the laptop template.
+- Builds targeting musl libc no longer link against glibc's `malloc_trim`.
+- Lock tracking now treats a positive login1 `LockedHint` as authoritative for
+  that episode, preventing short-lived clients such as `veila lock --wait-ready`
+  from producing a false unlock when they exit. Foreground process lifetime
+  remains the fallback when no positive hint is observed.
+- login1 `Lock` and `Unlock` request signals no longer masquerade as completed
+  session state; `enable_loginctl_integration` now gates only sleep/wake
+  monitoring while `LockedHint` remains automatic.
+
+### Changed
+
+- Configuration reload responses now clearly state whether Stasis retained the
+  active profile or returned to the base configuration.
+
 ## [1.4.0] - 2026-07-12
 
 ### Added
