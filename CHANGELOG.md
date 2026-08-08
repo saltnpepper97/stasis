@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `suspend_inhibit_apps` can keep selected applications running while allowing earlier idle-plan actions such as lock, DPMS, and hardware low-power mode.
-- `media_inhibit_scope "suspend"` applies the same suspend-only behavior to monitored media playback; the default `"all"` scope preserves existing configurations.
+- `suspend_inhibit_media` applies the same suspend-only behavior to selected monitored media sources; other eligible media keeps the historical full-plan inhibit behavior.
 - Suspend-only holds preserve the remaining suspend timeout and resume it when the last matching inhibitor clears.
 
 ### Changed

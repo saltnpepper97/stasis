@@ -69,13 +69,6 @@ This setting is separate from D-Bus inhibit monitoring. Browser media inhibit
 is controlled by \fBenable_dbus_inhibit\fR.
 
 .TP
-.B media_inhibit_scope "all"|"suspend"
-Controls which automatic idle actions monitored media playback inhibits.
-The default, \fB"all"\fR, pauses the entire idle plan for backward compatibility.
-\fB"suspend"\fR allows earlier actions such as lock, DPMS, and hardware low-power
-mode while blocking only the automatic suspend step.
-
-.TP
 .B ignore_remote_media true|false
 If true, remote players are ignored for media inhibit.
 
@@ -83,6 +76,13 @@ If true, remote players are ignored for media inhibit.
 .B media_blacklist [ \fIPATTERN...\fR ]
 List of patterns to ignore for media inhibit (case-insensitive).
 Patterns may be literal strings or regular expressions.
+
+.TP
+.B suspend_inhibit_media [ \fIPATTERN...\fR ]
+List of monitored media-source patterns that block only the automatic suspend
+step while playing. Earlier actions such as lock, DPMS, and hardware low-power
+mode continue to run. Eligible media that does not match this list pauses the
+full idle plan. Media blacklist and remote-player filters are applied first.
 
 .TP
 .B debounce_seconds \fIN\fR
@@ -312,8 +312,8 @@ When resuming from a pause, internal timestamps are adjusted so timers do not
 advance during the paused interval.
 
 .SH PATTERNS
-Lists such as \fBinhibit_apps\fR, \fBsuspend_inhibit_apps\fR, and
-\fBmedia_blacklist\fR accept:
+Lists such as \fBinhibit_apps\fR, \fBsuspend_inhibit_apps\fR,
+\fBsuspend_inhibit_media\fR, and \fBmedia_blacklist\fR accept:
 
 .TP
 .B Literal strings
@@ -331,8 +331,8 @@ default:
   enable_loginctl_integration true
   enable_dbus_inhibit true
   monitor_media true
-  media_inhibit_scope "suspend"
-  suspend_inhibit_apps ["spotify" "mpd"]
+  suspend_inhibit_media ["spotify" "mpd"]
+  suspend_inhibit_apps ["handbrake"]
   debounce_seconds 5
   notify_before_action true
 

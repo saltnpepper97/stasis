@@ -875,11 +875,19 @@ end
 
         assert_eq!(
             cfg.default
-                .suspend_inhibit_apps
+                .suspend_inhibit_media
                 .iter()
                 .map(Pattern::render)
                 .collect::<Vec<_>>(),
             ["spotify", "mpd"]
+        );
+        assert_eq!(
+            cfg.default
+                .suspend_inhibit_apps
+                .iter()
+                .map(Pattern::render)
+                .collect::<Vec<_>>(),
+            ["handbrake"]
         );
     }
 }

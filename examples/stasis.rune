@@ -22,8 +22,8 @@ default:
   pre_suspend_command None
   monitor_media true
   ignore_remote_media true
-  # "all" pauses the full plan; "suspend" allows lock/DPMS/low-power actions.
-  media_inhibit_scope "suspend"
+  # Matching media blocks only suspend; other eligible media pauses the full plan.
+  suspend_inhibit_media ["spotify" "mpd"]
   debounce_seconds 5
 
   # Shell command to run immediately when logind emits PrepareForSleep(true).
@@ -76,8 +76,7 @@ default:
 
   # Apps that block only automatic suspend while allowing earlier idle actions.
   suspend_inhibit_apps [
-    "spotify"
-    "mpd"
+    "handbrake"
   ]
 
   # ----------------------------------------------------------------

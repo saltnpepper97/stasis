@@ -192,15 +192,17 @@ To let the display turn off without automatically suspending:
 ```rune
 default:
   monitor_media true
-  media_inhibit_scope "suspend"
-  suspend_inhibit_apps ["spotify" "mpd"]
+  suspend_inhibit_media ["spotify" "mpd"]
+  suspend_inhibit_apps ["handbrake"]
 end
 ```
 
-`suspend_inhibit_apps` blocks only the automatic suspend step. `media_inhibit_scope`
-accepts `"all"` (the backward-compatible default) or `"suspend"`. When a
-suspend-only inhibitor clears, Stasis resumes the remaining suspend timeout;
-manual `stasis trigger suspend` still runs immediately.
+`suspend_inhibit_apps` and `suspend_inhibit_media` block only the automatic
+suspend step. Monitored media that does not match `suspend_inhibit_media` keeps
+the historical behavior and pauses the full idle plan. Media blacklist and
+remote-player filters are applied first. When a suspend-only inhibitor clears,
+Stasis resumes the remaining suspend timeout; manual `stasis trigger suspend`
+still runs immediately.
 
 ---
 
