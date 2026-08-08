@@ -169,6 +169,9 @@ pub struct Config {
     /// Media sources/apps to ignore for media inhibit (case-insensitive; loader normalizes).
     pub media_blacklist: Vec<Pattern>,
 
+    /// Media sources/apps that should inhibit only automatic suspend.
+    pub suspend_inhibit_media: Vec<Pattern>,
+
     /// Debounce window in seconds.
     pub debounce_seconds: u64,
 
@@ -222,6 +225,7 @@ impl Config {
             ignore_remote_media: false,
             media_inhibit_scope: MediaInhibitScope::All,
             media_blacklist: Vec::new(),
+            suspend_inhibit_media: Vec::new(),
 
             debounce_seconds: 0,
 
@@ -404,6 +408,7 @@ pub struct PartialConfig {
     pub media_inhibit_scope: Option<MediaInhibitScope>,
 
     pub media_blacklist: Option<Vec<Pattern>>,
+    pub suspend_inhibit_media: Option<Vec<Pattern>>,
     pub debounce_seconds: Option<u64>,
 
     pub notify_on_unpause: Option<bool>,
@@ -487,6 +492,9 @@ impl PartialConfig {
 
         if let Some(v) = &self.media_blacklist {
             base.media_blacklist = v.clone();
+        }
+        if let Some(v) = &self.suspend_inhibit_media {
+            base.suspend_inhibit_media = v.clone();
         }
 
         if let Some(v) = self.debounce_seconds {

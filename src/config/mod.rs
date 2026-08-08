@@ -151,6 +151,8 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
 
             // allow strings OR /regex/ entries (keep compiled regex)
             cfg.media_blacklist = get_vec_pattern(rc, "default.media_blacklist", Vec::new())?;
+            cfg.suspend_inhibit_media =
+                get_vec_pattern(rc, "default.suspend_inhibit_media", Vec::new())?;
 
             cfg.debounce_seconds = rc.get_or("default.debounce_seconds", 0u64);
 
@@ -245,6 +247,7 @@ fn parse_plan_block(
                 | "ignore_remote_media"
                 | "media_inhibit_scope"
                 | "media_blacklist"
+                | "suspend_inhibit_media"
                 | "debounce_seconds"
                 | "notify_on_unpause"
                 | "notify_before_action"
@@ -419,6 +422,7 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
             opt_media_inhibit_scope(rc, &format!("{name}.media_inhibit_scope"))?;
 
         pc.media_blacklist = opt_vec_pattern(rc, &format!("{name}.media_blacklist"))?;
+        pc.suspend_inhibit_media = opt_vec_pattern(rc, &format!("{name}.suspend_inhibit_media"))?;
         pc.debounce_seconds = opt_u64(rc, format!("{name}.debounce_seconds"))?;
         pc.notify_on_unpause = opt_bool(rc, format!("{name}.notify_on_unpause"))?;
         pc.notify_before_action = opt_bool(rc, format!("{name}.notify_before_action"))?;
@@ -726,6 +730,7 @@ fn log_config_debug(cfg_file: &ConfigFile) {
     eventline::debug!("  ignore_remote_media = {:?}", cfg.ignore_remote_media);
     eventline::debug!("  media_inhibit_scope = {}", cfg.media_inhibit_scope);
     eventline::debug!("  media_blacklist = {:?}", cfg.media_blacklist);
+    eventline::debug!("  suspend_inhibit_media = {:?}", cfg.suspend_inhibit_media);
 
     eventline::debug!("  debounce_seconds = {:?}", cfg.debounce_seconds);
 
@@ -824,6 +829,7 @@ mod tests {
 
         assert_eq!(cfg.default.media_inhibit_scope, MediaInhibitScope::All);
         assert!(cfg.default.suspend_inhibit_apps.is_empty());
+        assert!(cfg.default.suspend_inhibit_media.is_empty());
     }
 
     #[test]
@@ -832,12 +838,14 @@ mod tests {
             r#"
 default:
   media_inhibit_scope "suspend"
+  suspend_inhibit_media ["spotify" r"mpd"]
   suspend_inhibit_apps ["spotify" r"mpd"]
 end
 
 music:
   mode "overlay"
   media_inhibit_scope "all"
+  suspend_inhibit_media ["vlc"]
   suspend_inhibit_apps ["vlc"]
 end
 "#,
@@ -845,6 +853,14 @@ end
         .expect("suspend inhibitor settings should parse");
 
         assert_eq!(cfg.default.media_inhibit_scope, MediaInhibitScope::Suspend);
+        assert_eq!(
+            cfg.default
+                .suspend_inhibit_media
+                .iter()
+                .map(Pattern::render)
+                .collect::<Vec<_>>(),
+            ["spotify", "/mpd/"]
+        );
         assert_eq!(
             cfg.default
                 .suspend_inhibit_apps
@@ -862,6 +878,17 @@ end
         assert_eq!(
             profile.config.media_inhibit_scope,
             Some(MediaInhibitScope::All)
+        );
+        assert_eq!(
+            profile
+                .config
+                .suspend_inhibit_media
+                .as_ref()
+                .expect("profile media list should parse")
+                .iter()
+                .map(Pattern::render)
+                .collect::<Vec<_>>(),
+            ["vlc"]
         );
         assert_eq!(
             profile

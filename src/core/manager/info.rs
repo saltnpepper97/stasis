@@ -204,6 +204,15 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
         out.push_str("MediaBlacklist: none\n");
     }
 
+    if !cfg.suspend_inhibit_media.is_empty() {
+        out.push_str(&format!(
+            "SuspendInhibitMedia: {}\n",
+            join_patterns(&cfg.suspend_inhibit_media)
+        ));
+    } else {
+        out.push_str("SuspendInhibitMedia: none\n");
+    }
+
     if let Some(cmd) = cfg.pre_suspend_command.as_deref() {
         out.push_str(&format!("PreSuspendCommand: {cmd}\n"));
     } else {

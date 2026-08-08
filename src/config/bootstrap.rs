@@ -101,6 +101,9 @@ default:
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
 
+  # Media sources that block only automatic suspend while actively playing.
+  suspend_inhibit_media [ ]
+
   # Debounce window in seconds before starting the plan (default 0)
   #debounce_seconds 4
 
@@ -267,6 +270,9 @@ default:
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
 
+  # Media sources that block only automatic suspend while actively playing.
+  suspend_inhibit_media [ ]
+
   # Debounce window in seconds before starting the plan (default 0)
   #debounce_seconds 4
 
@@ -348,6 +354,7 @@ mod tests {
         );
         assert_eq!(contents.matches("media_inhibit_scope \"all\"").count(), 1);
         assert_eq!(contents.matches("suspend_inhibit_apps [ ]").count(), 1);
+        assert_eq!(contents.matches("suspend_inhibit_media [ ]").count(), 1);
 
         let rc = RuneConfig::from_str(&contents).expect("bootstrap config should be valid Rune");
         super::super::parse_config_file(&rc)
