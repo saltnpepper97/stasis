@@ -68,8 +68,13 @@ impl Manager {
             }
 
             Event::BrowserActivity { .. } => {
+                // Browser policy is authoritative for gating, but it is not proof
+                // of physical input. Preserve a current compositor observation so
+                // BrowserInactive can safely resume an already-idle session.
+                let compositor_idle = state.compositor_idle();
                 state.note_browser_activity(now_ms, Self::BROWSER_ACTIVITY_HOLD_MS);
                 self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
+                state.set_compositor_idle(compositor_idle);
             }
 
             Event::BrowserInactive { .. } => {

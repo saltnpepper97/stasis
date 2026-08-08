@@ -513,14 +513,11 @@ fn browser_inactive_uses_a_current_verified_idle_state() {
     let mut state = State::new(0);
     state.set_plan_source(PlanSource::Desktop);
 
-    let actions = mgr
-        .handle_event(&mut state, Event::BrowserActivity { now_ms: 0 })
-        .unwrap();
-    assert!(actions.is_empty());
+    // The compositor was already genuinely idle before browser policy engaged.
+    enter_idle(&mut mgr, &mut state, 0);
 
-    // A genuine compositor idle edge is retained while browser policy masks it.
     let actions = mgr
-        .handle_event(&mut state, Event::CompositorIdled { now_ms: 1_000 })
+        .handle_event(&mut state, Event::BrowserActivity { now_ms: 100 })
         .unwrap();
     assert!(actions.is_empty());
     assert!(state.compositor_idle());

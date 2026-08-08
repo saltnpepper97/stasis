@@ -48,8 +48,8 @@ pub struct State {
     // True means: apply debounce ONCE before the next non-instant step fires.
     debounce_pending: bool,
 
-    // Latest inhibitor-aware compositor idle state. This is cleared by any
-    // activity-like transition so stale idle observations cannot start a plan.
+    // Latest inhibitor-aware compositor idle state. Idle-cycle resets clear it
+    // unless the caller knows the observation remains authoritative.
     compositor_idle: bool,
 
     // Session / profile
