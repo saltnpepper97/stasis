@@ -92,6 +92,10 @@ default:
   monitor_media true
   ignore_remote_media true # ignore remote players (spotify/kdeconnect/etc.)
 
+  # Media normally pauses the entire plan. Use "suspend" to allow lock, DPMS,
+  # and hardware low-power mode while blocking only automatic suspend.
+  #media_inhibit_scope "suspend"
+
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
 
@@ -114,6 +118,10 @@ default:
     "mpv"
     r"steam_app_.*"
   ]
+
+  # App/process patterns that block only automatic suspend. The remaining
+  # suspend timeout resumes after the last matching app exits.
+  #suspend_inhibit_apps ["spotify" "mpd"]
 
   # -----------------------------
   # Prepare sleep command
@@ -250,6 +258,10 @@ default:
   monitor_media true
   ignore_remote_media true # ignore remote players (spotify/kdeconnect/etc.)
 
+  # Media normally pauses the entire plan. Use "suspend" to allow lock, DPMS,
+  # and hardware low-power mode while blocking only automatic suspend.
+  #media_inhibit_scope "suspend"
+
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
 
@@ -272,6 +284,10 @@ default:
     "mpv"
     r"steam_app_.*"
   ]
+
+  # App/process patterns that block only automatic suspend. The remaining
+  # suspend timeout resumes after the last matching app exits.
+  #suspend_inhibit_apps ["spotify" "mpd"]
 
   # -----------------------------
   # Hardware low-power mode
@@ -326,6 +342,16 @@ mod tests {
         assert_eq!(contents.matches("#low_power_when_idle false").count(), 1);
         assert_eq!(
             contents.matches("#low_power_when_idle_timeout 10").count(),
+            1
+        );
+        assert_eq!(
+            contents.matches("#media_inhibit_scope \"suspend\"").count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("#suspend_inhibit_apps [\"spotify\" \"mpd\"]")
+                .count(),
             1
         );
 

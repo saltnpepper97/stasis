@@ -5,6 +5,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `suspend_inhibit_apps` can keep selected applications running while allowing earlier idle-plan actions such as lock, DPMS, and hardware low-power mode.
+- `media_inhibit_scope "suspend"` applies the same suspend-only behavior to monitored media playback; the default `"all"` scope preserves existing configurations.
+- Suspend-only holds preserve the remaining suspend timeout and resume it when the last matching inhibitor clears.
+
 ### Fixed
 
 - Idle plans now require verified inhibitor-aware compositor idle state, preventing browser-inactive, lid-open, sleep-resume, and startup paths from advancing toward lock while the user is active ([#95](https://github.com/saltnpepper97/stasis/issues/95)).

@@ -69,6 +69,13 @@ This setting is separate from D-Bus inhibit monitoring. Browser media inhibit
 is controlled by \fBenable_dbus_inhibit\fR.
 
 .TP
+.B media_inhibit_scope "all"|"suspend"
+Controls which automatic idle actions monitored media playback inhibits.
+The default, \fB"all"\fR, pauses the entire idle plan for backward compatibility.
+\fB"suspend"\fR allows earlier actions such as lock, DPMS, and hardware low-power
+mode while blocking only the automatic suspend step.
+
+.TP
 .B ignore_remote_media true|false
 If true, remote players are ignored for media inhibit.
 
@@ -102,6 +109,11 @@ Set to an empty string to disable the default icon.
 .B inhibit_apps [ \fIPATTERN...\fR ]
 List of patterns that inhibit idle behavior while active (case-insensitive).
 Regular expressions are allowed.
+
+.TP
+.B suspend_inhibit_apps [ \fIPATTERN...\fR ]
+List of patterns that block only the automatic suspend step while active.
+Earlier idle-plan actions continue to run. Regular expressions are allowed.
 
 .TP
 .B prepare_sleep_command \fICOMMAND\fR | ""
@@ -284,8 +296,13 @@ notification using the message associated with the pause expiry event, such as:
 \fBResume idle manager: pause-until time reached (<time>)\fR
 
 .SH INHIBITION
-Stasis pauses timers while inhibitors are active (apps and/or media) or while the
-system is paused (sleep/lid events).
+Stasis pauses timers while full-plan inhibitors are active (apps and/or media)
+or while the system is paused (sleep/lid events).
+.PP
+Suspend-only app or media inhibitors freeze the remaining timeout only when
+suspend is the next runnable step. Earlier actions and hardware low-power mode
+continue. When the last suspend-only inhibitor clears, the remaining timeout
+resumes. Explicit \fBstasis trigger suspend\fR commands are not blocked.
 
 Lid close/open pause/resume plan timers regardless of any configured lid actions.
 If \fBlid_close_action\fR/\fBlid_open_action\fR are set, their commands run immediately
@@ -295,7 +312,8 @@ When resuming from a pause, internal timestamps are adjusted so timers do not
 advance during the paused interval.
 
 .SH PATTERNS
-Lists such as \fBinhibit_apps\fR and \fBmedia_blacklist\fR accept:
+Lists such as \fBinhibit_apps\fR, \fBsuspend_inhibit_apps\fR, and
+\fBmedia_blacklist\fR accept:
 
 .TP
 .B Literal strings
@@ -312,6 +330,9 @@ A minimal desktop example:
 default:
   enable_loginctl_integration true
   enable_dbus_inhibit true
+  monitor_media true
+  media_inhibit_scope "suspend"
+  suspend_inhibit_apps ["spotify" "mpd"]
   debounce_seconds 5
   notify_before_action true
 

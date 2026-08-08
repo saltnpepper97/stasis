@@ -43,6 +43,7 @@ It is a **context-aware, event-driven idle manager** built around explicit state
   - Differentiates active, paused, and muted streams
 - 🚫 Application-specific inhibitors
   - Prevent idle when selected apps are running
+  - Or block only automatic suspend while earlier idle actions continue
   - Regex-based matching supported
 - ⏸️ Wayland idle inhibitor support
   - Honors compositor and application inhibitors
@@ -186,6 +187,21 @@ Important separation:
 - `monitor_media` is only for non-browser media/audio state.
 - Browser media inhibit is not handled by `monitor_media`; it is handled by D-Bus inhibit monitoring.
 
+To let the display turn off without automatically suspending:
+
+```rune
+default:
+  monitor_media true
+  media_inhibit_scope "suspend"
+  suspend_inhibit_apps ["spotify" "mpd"]
+end
+```
+
+`suspend_inhibit_apps` blocks only the automatic suspend step. `media_inhibit_scope`
+accepts `"all"` (the backward-compatible default) or `"suspend"`. When a
+suspend-only inhibitor clears, Stasis resumes the remaining suspend timeout;
+manual `stasis trigger suspend` still runs immediately.
+
 ---
 
 ## CLI Usage
@@ -259,8 +275,9 @@ Stasis integrates with each compositor's available IPC and standard Wayland prot
 ### Halley Notes
 
 When running inside a Halley session, Stasis uses `halleyctl node list --json`
-for app-inhibit tracking. `inhibit_apps` patterns match Halley window `app_id`
-values, such as `firefox`, `kitty`, or `steam_app_123`.
+for app-inhibit tracking. `inhibit_apps` and `suspend_inhibit_apps` patterns
+match Halley window `app_id` values, such as `firefox`, `kitty`, or
+`steam_app_123`.
 
 ### River & labwc Notes
 

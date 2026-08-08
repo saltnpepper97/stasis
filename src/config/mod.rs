@@ -889,4 +889,21 @@ end
 
         assert!(error.contains("expected \"all\" or \"suspend\""));
     }
+
+    #[test]
+    fn shipped_example_matches_the_current_schema() {
+        let rc = RuneConfig::from_str(include_str!("../../examples/stasis.rune"))
+            .expect("shipped example should be valid Rune");
+        let cfg = parse_config_file(&rc).expect("shipped example should match the schema");
+
+        assert_eq!(cfg.default.media_inhibit_scope, MediaInhibitScope::Suspend);
+        assert_eq!(
+            cfg.default
+                .suspend_inhibit_apps
+                .iter()
+                .map(Pattern::render)
+                .collect::<Vec<_>>(),
+            ["spotify", "mpd"]
+        );
+    }
 }
