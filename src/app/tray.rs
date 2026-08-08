@@ -166,7 +166,6 @@ impl Tray for StasisTray {
             MenuItem::Separator,
             StandardItem {
                 label: "Quit Tray".to_string(),
-                icon_name: "application-exit".to_string(),
                 activate: Box::new(|this: &mut Self| this.send(TrayCommand::Quit)),
                 ..Default::default()
             }

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Idle plans now require verified inhibitor-aware compositor idle state, preventing browser-inactive, lid-open, sleep-resume, and startup paths from advancing toward lock while the user is active ([#95](https://github.com/saltnpepper97/stasis/issues/95)).
 - Compositors supporting `ext-idle-notify-v1` version 2 now use its inhibitor-independent input notification alongside the inhibitor-aware notification. Version 1 compositors retain a conservative fallback.
+- The Quit Tray menu entry no longer requests a theme icon that some tray hosts render as a missing texture.
 
 ## [1.4.1] - 2026-07-30
 
