@@ -12,26 +12,28 @@ use crate::core::utils::{ChassisKind, detect_chassis};
 pub fn ensure_user_config_exists() -> io::Result<()> {
     let path = super::default_user_config_path();
 
-    // Ensure parent dir exists
-    if let Some(dir) = path.parent() {
-        if !dir.exists() {
-            fs::create_dir_all(dir)?;
-        }
-    }
-
     // If already present, do nothing.
     if path.exists() {
         return Ok(());
     }
 
-    let contents = generate_default_config();
-    fs::write(&path, contents)?;
+    write_default_config(&path)?;
 
     eventline::info!("Stasis: created default config at {}", path.display());
     Ok(())
 }
 
-fn generate_default_config() -> String {
+pub(crate) fn write_default_config(path: &std::path::Path) -> io::Result<()> {
+    if let Some(dir) = path.parent()
+        && !dir.exists()
+    {
+        fs::create_dir_all(dir)?;
+    }
+
+    fs::write(path, default_config_contents())
+}
+
+pub(crate) fn default_config_contents() -> String {
     match detect_chassis() {
         ChassisKind::Laptop => default_laptop_config(),
         _ => default_desktop_config(), // Desktop + Unknown fall back here
@@ -94,7 +96,7 @@ default:
 
   # Media normally pauses the entire plan. Use "suspend" to allow lock, DPMS,
   # and hardware low-power mode while blocking only automatic suspend.
-  #media_inhibit_scope "suspend"
+  media_inhibit_scope "all"
 
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
@@ -121,7 +123,7 @@ default:
 
   # App/process patterns that block only automatic suspend. The remaining
   # suspend timeout resumes after the last matching app exits.
-  #suspend_inhibit_apps ["spotify" "mpd"]
+  suspend_inhibit_apps [ ]
 
   # -----------------------------
   # Prepare sleep command
@@ -260,7 +262,7 @@ default:
 
   # Media normally pauses the entire plan. Use "suspend" to allow lock, DPMS,
   # and hardware low-power mode while blocking only automatic suspend.
-  #media_inhibit_scope "suspend"
+  media_inhibit_scope "all"
 
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
@@ -287,7 +289,7 @@ default:
 
   # App/process patterns that block only automatic suspend. The remaining
   # suspend timeout resumes after the last matching app exits.
-  #suspend_inhibit_apps ["spotify" "mpd"]
+  suspend_inhibit_apps [ ]
 
   # -----------------------------
   # Hardware low-power mode
@@ -344,16 +346,8 @@ mod tests {
             contents.matches("#low_power_when_idle_timeout 10").count(),
             1
         );
-        assert_eq!(
-            contents.matches("#media_inhibit_scope \"suspend\"").count(),
-            1
-        );
-        assert_eq!(
-            contents
-                .matches("#suspend_inhibit_apps [\"spotify\" \"mpd\"]")
-                .count(),
-            1
-        );
+        assert_eq!(contents.matches("media_inhibit_scope \"all\"").count(), 1);
+        assert_eq!(contents.matches("suspend_inhibit_apps [ ]").count(), 1);
 
         let rc = RuneConfig::from_str(&contents).expect("bootstrap config should be valid Rune");
         super::super::parse_config_file(&rc)

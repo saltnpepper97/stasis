@@ -123,13 +123,16 @@ pub async fn run(args: Args) -> Result<(), AnyError> {
 
     if config_path.exists() {
         match crate::config::migrate::migrate_in_place(&config_path) {
-            Ok(crate::config::migrate::MigrateOutcome::Migrated { backup_path }) => {
+            Ok(crate::config::migrate::MigrateOutcome::Replaced {
+                backup_path,
+                reason,
+            }) => {
                 eventline::info!(
-                    "migrated old config to new format; backup at {}",
+                    "replaced outdated config ({reason}); backup at {}",
                     backup_path.display()
                 );
             }
-            Ok(crate::config::migrate::MigrateOutcome::NotOldFormat) => {}
+            Ok(crate::config::migrate::MigrateOutcome::Current) => {}
             Err(e) => {
                 eventline::error!("config migration failed: {e}");
             }
