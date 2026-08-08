@@ -94,14 +94,11 @@ default:
   monitor_media true
   ignore_remote_media true # ignore remote players (spotify/kdeconnect/etc.)
 
-  # Media normally pauses the entire plan. Use "suspend" to allow lock, DPMS,
-  # and hardware low-power mode while blocking only automatic suspend.
-  media_inhibit_scope "all"
-
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
 
-  # Media sources that block only automatic suspend while actively playing.
+  # Media sources that allow lock/DPMS but block automatic suspend while playing.
+  # Other eligible media sources pause the full idle plan.
   suspend_inhibit_media [ ]
 
   # Debounce window in seconds before starting the plan (default 0)
@@ -263,14 +260,11 @@ default:
   monitor_media true
   ignore_remote_media true # ignore remote players (spotify/kdeconnect/etc.)
 
-  # Media normally pauses the entire plan. Use "suspend" to allow lock, DPMS,
-  # and hardware low-power mode while blocking only automatic suspend.
-  media_inhibit_scope "all"
-
   # Optional: ignore these media sources for media inhibit (case-insensitive)
   #media_blacklist ["spotify"]
 
-  # Media sources that block only automatic suspend while actively playing.
+  # Media sources that allow lock/DPMS but block automatic suspend while playing.
+  # Other eligible media sources pause the full idle plan.
   suspend_inhibit_media [ ]
 
   # Debounce window in seconds before starting the plan (default 0)
@@ -352,7 +346,6 @@ mod tests {
             contents.matches("#low_power_when_idle_timeout 10").count(),
             1
         );
-        assert_eq!(contents.matches("media_inhibit_scope \"all\"").count(), 1);
         assert_eq!(contents.matches("suspend_inhibit_apps [ ]").count(), 1);
         assert_eq!(contents.matches("suspend_inhibit_media [ ]").count(), 1);
 

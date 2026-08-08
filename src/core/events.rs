@@ -7,12 +7,6 @@ pub enum ActivityKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaState {
-    Idle,
-    PlayingLocal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerState {
     OnAC,
     OnBattery,
@@ -63,11 +57,6 @@ pub enum Event {
 
     /// Compositor-reported "seat resumed from idle" via ext-idle-notify-v1.
     CompositorResumed {
-        now_ms: u64,
-    },
-
-    MediaStateChanged {
-        state: MediaState,
         now_ms: u64,
     },
 
@@ -132,6 +121,7 @@ pub enum Event {
     },
     MediaInhibitorCount {
         count: u64,
+        suspend_count: u64,
         now_ms: u64,
     },
 }
@@ -145,7 +135,6 @@ impl Event {
             | Event::BrowserInactive { now_ms }
             | Event::CompositorIdled { now_ms }
             | Event::CompositorResumed { now_ms }
-            | Event::MediaStateChanged { now_ms, .. }
             | Event::PowerChanged { now_ms, .. }
             | Event::LidClosed { now_ms }
             | Event::LidOpened { now_ms }

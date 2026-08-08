@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use rune_cfg::{RuneConfig, Value};
 
 use crate::core::config::{
-    ActionBlock, Config, ConfigFile, LockBlock, MediaInhibitScope, PartialConfig, Pattern,
-    PlanSource, PlanStep, PlanStepKind, Profile, ProfileMode,
+    ActionBlock, Config, ConfigFile, LockBlock, PartialConfig, Pattern, PlanSource, PlanStep,
+    PlanStepKind, Profile, ProfileMode,
 };
 
 /// Loaded config + the concrete path that succeeded.
@@ -147,8 +147,6 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
 
             cfg.monitor_media = rc.get_or("default.monitor_media", false);
             cfg.ignore_remote_media = rc.get_or("default.ignore_remote_media", false);
-            cfg.media_inhibit_scope = get_media_inhibit_scope(rc, "default.media_inhibit_scope")?;
-
             // allow strings OR /regex/ entries (keep compiled regex)
             cfg.media_blacklist = get_vec_pattern(rc, "default.media_blacklist", Vec::new())?;
             cfg.suspend_inhibit_media =
@@ -245,7 +243,6 @@ fn parse_plan_block(
                 | "low_power_when_idle_timeout"
                 | "monitor_media"
                 | "ignore_remote_media"
-                | "media_inhibit_scope"
                 | "media_blacklist"
                 | "suspend_inhibit_media"
                 | "debounce_seconds"
@@ -418,9 +415,6 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
 
         pc.monitor_media = opt_bool(rc, format!("{name}.monitor_media"))?;
         pc.ignore_remote_media = opt_bool(rc, format!("{name}.ignore_remote_media"))?;
-        pc.media_inhibit_scope =
-            opt_media_inhibit_scope(rc, &format!("{name}.media_inhibit_scope"))?;
-
         pc.media_blacklist = opt_vec_pattern(rc, &format!("{name}.media_blacklist"))?;
         pc.suspend_inhibit_media = opt_vec_pattern(rc, &format!("{name}.suspend_inhibit_media"))?;
         pc.debounce_seconds = opt_u64(rc, format!("{name}.debounce_seconds"))?;
@@ -673,27 +667,6 @@ fn get_vec_pattern(
     Ok(opt_vec_pattern(rc, path)?.unwrap_or(default))
 }
 
-fn get_media_inhibit_scope(rc: &RuneConfig, path: &str) -> Result<MediaInhibitScope, String> {
-    Ok(opt_media_inhibit_scope(rc, path)?.unwrap_or_default())
-}
-
-fn opt_media_inhibit_scope(
-    rc: &RuneConfig,
-    path: &str,
-) -> Result<Option<MediaInhibitScope>, String> {
-    let Some(value) = opt_string(rc, path)? else {
-        return Ok(None);
-    };
-
-    match value.trim().to_ascii_lowercase().as_str() {
-        "all" => Ok(Some(MediaInhibitScope::All)),
-        "suspend" => Ok(Some(MediaInhibitScope::Suspend)),
-        other => Err(format!(
-            "config error at {path}: expected \"all\" or \"suspend\", got \"{other}\""
-        )),
-    }
-}
-
 /// Shared path helper used by bootstrap + default resolution.
 pub(crate) fn default_user_config_path() -> PathBuf {
     let dir: PathBuf = if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
@@ -728,7 +701,6 @@ fn log_config_debug(cfg_file: &ConfigFile) {
 
     eventline::debug!("  monitor_media = {:?}", cfg.monitor_media);
     eventline::debug!("  ignore_remote_media = {:?}", cfg.ignore_remote_media);
-    eventline::debug!("  media_inhibit_scope = {}", cfg.media_inhibit_scope);
     eventline::debug!("  media_blacklist = {:?}", cfg.media_blacklist);
     eventline::debug!("  suspend_inhibit_media = {:?}", cfg.suspend_inhibit_media);
 
@@ -827,7 +799,6 @@ mod tests {
     fn suspend_inhibitor_settings_are_backward_compatible() {
         let cfg = parse("default:\nend\n").expect("minimal config should parse");
 
-        assert_eq!(cfg.default.media_inhibit_scope, MediaInhibitScope::All);
         assert!(cfg.default.suspend_inhibit_apps.is_empty());
         assert!(cfg.default.suspend_inhibit_media.is_empty());
     }
@@ -837,14 +808,12 @@ mod tests {
         let cfg = parse(
             r#"
 default:
-  media_inhibit_scope "suspend"
   suspend_inhibit_media ["spotify" r"mpd"]
   suspend_inhibit_apps ["spotify" r"mpd"]
 end
 
 music:
   mode "overlay"
-  media_inhibit_scope "all"
   suspend_inhibit_media ["vlc"]
   suspend_inhibit_apps ["vlc"]
 end
@@ -852,7 +821,6 @@ end
         )
         .expect("suspend inhibitor settings should parse");
 
-        assert_eq!(cfg.default.media_inhibit_scope, MediaInhibitScope::Suspend);
         assert_eq!(
             cfg.default
                 .suspend_inhibit_media
@@ -875,10 +843,6 @@ end
             .iter()
             .find(|profile| profile.name == "music")
             .expect("music profile should parse");
-        assert_eq!(
-            profile.config.media_inhibit_scope,
-            Some(MediaInhibitScope::All)
-        );
         assert_eq!(
             profile
                 .config
@@ -904,26 +868,11 @@ end
     }
 
     #[test]
-    fn rejects_unknown_media_inhibit_scope() {
-        let error = parse(
-            r#"
-default:
-  media_inhibit_scope "display"
-end
-"#,
-        )
-        .expect_err("unknown scope should fail");
-
-        assert!(error.contains("expected \"all\" or \"suspend\""));
-    }
-
-    #[test]
     fn shipped_example_matches_the_current_schema() {
         let rc = RuneConfig::from_str(include_str!("../../examples/stasis.rune"))
             .expect("shipped example should be valid Rune");
         let cfg = parse_config_file(&rc).expect("shipped example should match the schema");
 
-        assert_eq!(cfg.default.media_inhibit_scope, MediaInhibitScope::Suspend);
         assert_eq!(
             cfg.default
                 .suspend_inhibit_apps

@@ -46,6 +46,7 @@ pub struct Daemon {
     monitor_media: bool,
     ignore_remote_media: bool,
     media_blacklist: Vec<Pattern>,
+    suspend_inhibit_media: Vec<Pattern>,
 
     inhibit_epoch: u64,
     enable_loginctl: bool,
@@ -112,18 +113,20 @@ impl Daemon {
         let monitor_media = effective.monitor_media;
         let ignore_remote_media = effective.ignore_remote_media;
         let media_blacklist = effective.media_blacklist.clone();
+        let suspend_inhibit_media = effective.suspend_inhibit_media.clone();
 
         let enable_loginctl_integration = effective.enable_loginctl_integration;
         let enable_dbus_inhibit = effective.enable_dbus_inhibit;
 
         eventline::debug!(
-            "daemon: chassis={:?}, plan_src={:?}, active_profile={:?}, monitor_media={}, ignore_remote_media={}, media_blacklist_len={}, inhibit_apps_len={}, suspend_inhibit_apps_len={}, enable_loginctl_integration={}, enable_dbus_inhibit={}, config_path={}",
+            "daemon: chassis={:?}, plan_src={:?}, active_profile={:?}, monitor_media={}, ignore_remote_media={}, media_blacklist_len={}, suspend_inhibit_media_len={}, inhibit_apps_len={}, suspend_inhibit_apps_len={}, enable_loginctl_integration={}, enable_dbus_inhibit={}, config_path={}",
             chassis,
             plan_src,
             cfg_file.active_profile,
             monitor_media,
             ignore_remote_media,
             media_blacklist.len(),
+            suspend_inhibit_media.len(),
             inhibit_apps.len(),
             suspend_inhibit_apps.len(),
             enable_loginctl_integration,
@@ -154,6 +157,7 @@ impl Daemon {
             monitor_media,
             ignore_remote_media,
             media_blacklist,
+            suspend_inhibit_media,
             inhibit_epoch: 0,
             enable_loginctl: enable_loginctl_integration,
             enable_dbus_inhibit,
@@ -187,6 +191,7 @@ impl Daemon {
             monitor_media: effective.monitor_media,
             ignore_remote_media: effective.ignore_remote_media,
             media_blacklist: effective.media_blacklist.clone(),
+            suspend_inhibit_media: effective.suspend_inhibit_media.clone(),
         };
 
         let _ = tx.try_send(msg);

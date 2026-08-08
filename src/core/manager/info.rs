@@ -167,7 +167,6 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
     ));
 
     out.push_str(&format!("MonitorMedia: {}\n", yesno(cfg.monitor_media)));
-    out.push_str(&format!("MediaInhibitScope: {}\n", cfg.media_inhibit_scope));
     out.push_str(&format!(
         "IgnoreRemoteMedia: {}\n",
         yesno(cfg.ignore_remote_media)

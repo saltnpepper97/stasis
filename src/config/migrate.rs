@@ -136,7 +136,7 @@ mod tests {
         let current = super::super::bootstrap::default_config_contents();
         let missing = current
             .lines()
-            .filter(|line| !line.trim_start().starts_with("media_inhibit_scope "))
+            .filter(|line| !line.trim_start().starts_with("suspend_inhibit_media "))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -144,7 +144,7 @@ mod tests {
             replacement_reason(&missing)
                 .unwrap()
                 .expect("missing knob should be detected")
-                .contains("media_inhibit_scope")
+                .contains("suspend_inhibit_media")
         );
         assert!(
             replacement_reason("default:\n  broken [\nend\n")

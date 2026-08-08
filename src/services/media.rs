@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 use crate::core::config::Pattern;
-use crate::core::events::{Event, MediaState};
+use crate::core::events::Event;
 use crate::core::manager_msg::ManagerMsg;
 
 #[derive(Debug, Clone)]
@@ -17,6 +17,7 @@ pub struct MediaRules {
     pub monitor_media: bool,
     pub ignore_remote_media: bool,
     pub media_blacklist: Vec<Pattern>,
+    pub suspend_inhibit_media: Vec<Pattern>,
 }
 
 /// Spawnable task: polls PulseAudio/PipeWire sink-input state for non-browser,
@@ -26,14 +27,19 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
     let mut last_epoch = initial.epoch;
     let mut ignore_first_epoch_bump = true;
 
-    let mut svc = MediaService::new(initial.ignore_remote_media, initial.media_blacklist.clone())
-        .with_poll_interval_ms(500);
+    let mut svc = MediaService::new(
+        initial.ignore_remote_media,
+        initial.media_blacklist.clone(),
+        initial.suspend_inhibit_media.clone(),
+    )
+    .with_poll_interval_ms(500);
 
     eventline::info!(
-        "media: started (monitor_media={}, ignore_remote_media={}, blacklist_len={}, backend={}) [pactl-sink-input-truth]",
+        "media: started (monitor_media={}, ignore_remote_media={}, blacklist_len={}, suspend_media_len={}, backend={}) [pactl-sink-input-truth]",
         initial.monitor_media,
         initial.ignore_remote_media,
         svc.blacklist_len(),
+        svc.suspend_media_len(),
         svc.backend_name(),
     );
 
@@ -62,14 +68,18 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
                 }
 
                 let rules = rules_rx.borrow().clone();
-                let MediaRules { epoch, monitor_media, ignore_remote_media, media_blacklist } = rules;
+                let MediaRules { epoch, monitor_media, ignore_remote_media, media_blacklist, suspend_inhibit_media } = rules;
 
                 let epoch_bumped = epoch != last_epoch;
                 if epoch_bumped {
                     last_epoch = epoch;
                 }
 
-                svc.reconfigure(ignore_remote_media, media_blacklist.clone());
+                svc.reconfigure(
+                    ignore_remote_media,
+                    media_blacklist.clone(),
+                    suspend_inhibit_media.clone(),
+                );
 
                 if monitor_media != last_enabled {
                     last_enabled = monitor_media;
@@ -125,28 +135,26 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
 
 async fn seed_idle(tx: &mpsc::Sender<ManagerMsg>) {
     let now_ms = crate::core::utils::now_ms();
-    for ev in [
-        Event::MediaInhibitorCount { count: 0, now_ms },
-        Event::MediaStateChanged {
-            state: MediaState::Idle,
+    let _ = tx
+        .send(ManagerMsg::Event(Event::MediaInhibitorCount {
+            count: 0,
+            suspend_count: 0,
             now_ms,
-        },
-    ] {
-        let _ = tx.send(ManagerMsg::Event(ev)).await;
-    }
+        }))
+        .await;
 }
 
 #[derive(Debug)]
 pub struct MediaService {
     ignore_remote_media: bool,
     media_blacklist: Vec<Pattern>,
+    suspend_inhibit_media: Vec<Pattern>,
     backend: MediaBackend,
 
     poll_interval_ms: u64,
     last_poll_ms: u64,
 
-    last_count: Option<u64>,
-    last_state: Option<MediaState>,
+    last_counts: Option<(u64, u64)>,
 
     force_emit: bool,
 }
@@ -158,15 +166,19 @@ enum MediaBackend {
 }
 
 impl MediaService {
-    pub fn new(ignore_remote_media: bool, media_blacklist: Vec<Pattern>) -> Self {
+    pub fn new(
+        ignore_remote_media: bool,
+        media_blacklist: Vec<Pattern>,
+        suspend_inhibit_media: Vec<Pattern>,
+    ) -> Self {
         Self {
             ignore_remote_media,
             media_blacklist,
+            suspend_inhibit_media,
             backend: detect_backend(),
             poll_interval_ms: 1000,
             last_poll_ms: 0,
-            last_count: None,
-            last_state: None,
+            last_counts: None,
             force_emit: false,
         }
     }
@@ -180,6 +192,10 @@ impl MediaService {
         self.media_blacklist.len()
     }
 
+    pub fn suspend_media_len(&self) -> usize {
+        self.suspend_inhibit_media.len()
+    }
+
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
             MediaBackend::Pactl => "pactl",
@@ -187,19 +203,27 @@ impl MediaService {
         }
     }
 
-    pub fn reconfigure(&mut self, ignore_remote_media: bool, media_blacklist: Vec<Pattern>) {
+    pub fn reconfigure(
+        &mut self,
+        ignore_remote_media: bool,
+        media_blacklist: Vec<Pattern>,
+        suspend_inhibit_media: Vec<Pattern>,
+    ) {
         let changed = self.ignore_remote_media != ignore_remote_media
-            || !patterns_same(&self.media_blacklist, &media_blacklist);
+            || !patterns_same(&self.media_blacklist, &media_blacklist)
+            || !patterns_same(&self.suspend_inhibit_media, &suspend_inhibit_media);
 
         self.ignore_remote_media = ignore_remote_media;
         self.media_blacklist = media_blacklist;
+        self.suspend_inhibit_media = suspend_inhibit_media;
 
         if changed {
             self.force_emit_next();
             eventline::info!(
-                "media: reconfigured (ignore_remote_media={}, blacklist_len={})",
+                "media: reconfigured (ignore_remote_media={}, blacklist_len={}, suspend_media_len={})",
                 self.ignore_remote_media,
-                self.media_blacklist.len()
+                self.media_blacklist.len(),
+                self.suspend_inhibit_media.len()
             );
         }
     }
@@ -215,60 +239,56 @@ impl MediaService {
         }
         self.last_poll_ms = now_ms;
 
-        let count = match self.backend {
+        let counts = match self.backend {
             MediaBackend::Pactl => {
-                match pactl_sink_input_count(self.ignore_remote_media, &self.media_blacklist) {
-                    Ok(n) => n,
+                match pactl_sink_input_counts(
+                    self.ignore_remote_media,
+                    &self.media_blacklist,
+                    &self.suspend_inhibit_media,
+                ) {
+                    Ok(counts) => counts,
                     Err(e) => {
                         eventline::warn!(
                             "media: pactl sink-input query failed (keeping previous): {}",
                             e
                         );
-                        self.last_count.unwrap_or(0)
+                        self.last_counts.unwrap_or((0, 0))
                     }
                 }
             }
-            MediaBackend::None => 0,
+            MediaBackend::None => (0, 0),
         };
 
-        let state = if count > 0 {
-            MediaState::PlayingLocal
-        } else {
-            MediaState::Idle
-        };
-
-        self.emit_state(now_ms, count, state)
+        self.emit_counts(now_ms, counts)
     }
 
-    fn emit_state(&mut self, now_ms: u64, count: u64, state: MediaState) -> Option<Vec<Event>> {
-        let first_poll = self.last_count.is_none() && self.last_state.is_none();
-        let prev_count = self.last_count.unwrap_or(0);
+    fn emit_counts(&mut self, now_ms: u64, counts: (u64, u64)) -> Option<Vec<Event>> {
+        let first_poll = self.last_counts.is_none();
+        let previous = self.last_counts.unwrap_or((0, 0));
+        let changed = !first_poll && previous != counts;
 
-        let count_changed = !first_poll && self.last_count != Some(count);
-        let state_changed = !first_poll && self.last_state != Some(state);
-
-        if count_changed {
+        if changed {
             eventline::info!(
-                "media: count {} -> {} (state={:?})",
-                prev_count,
-                count,
-                state
+                "media: counts {:?} -> {:?} (full, suspend-only)",
+                previous,
+                counts
             );
-        } else if (first_poll || self.force_emit) && count != 0 {
-            eventline::info!("media: count {} -> {} (state={:?})", 0u64, count, state);
+        } else if (first_poll || self.force_emit) && counts != (0, 0) {
+            eventline::info!(
+                "media: counts {:?} -> {:?} (full, suspend-only)",
+                (0u64, 0u64),
+                counts
+            );
         }
 
-        if first_poll || count_changed || state_changed || self.force_emit {
-            self.last_count = Some(count);
-            self.last_state = Some(state);
-
-            let out = vec![
-                Event::MediaInhibitorCount { count, now_ms },
-                Event::MediaStateChanged { state, now_ms },
-            ];
-
+        if first_poll || changed || self.force_emit {
+            self.last_counts = Some(counts);
             self.force_emit = false;
-            return Some(out);
+            return Some(vec![Event::MediaInhibitorCount {
+                count: counts.0,
+                suspend_count: counts.1,
+                now_ms,
+            }]);
         }
 
         None
@@ -311,10 +331,11 @@ fn pactl_available() -> bool {
         .unwrap_or(false)
 }
 
-fn pactl_sink_input_count(
+fn pactl_sink_input_counts(
     ignore_remote_media: bool,
     media_blacklist: &[Pattern],
-) -> Result<u64, String> {
+    suspend_inhibit_media: &[Pattern],
+) -> Result<(u64, u64), String> {
     let out = session_env_cmd("pactl")
         .args(["list", "sink-inputs"])
         .output()
@@ -326,21 +347,52 @@ fn pactl_sink_input_count(
     }
 
     let text = String::from_utf8_lossy(&out.stdout);
+    Ok(pactl_text_counts(
+        &text,
+        ignore_remote_media,
+        media_blacklist,
+        suspend_inhibit_media,
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaInhibitKind {
+    Full,
+    Suspend,
+}
+
+fn pactl_text_counts(
+    text: &str,
+    ignore_remote_media: bool,
+    media_blacklist: &[Pattern],
+    suspend_inhibit_media: &[Pattern],
+) -> (u64, u64) {
     if text.trim().is_empty() {
-        return Ok(0);
+        return (0, 0);
     }
 
-    let mut count = 0u64;
+    let mut counts = (0u64, 0u64);
     let mut block = String::new();
     let mut saw_header = false;
+
+    let count_block = |block: &str, counts: &mut (u64, u64)| match sink_input_inhibit_kind(
+        block,
+        ignore_remote_media,
+        media_blacklist,
+        suspend_inhibit_media,
+    ) {
+        Some(MediaInhibitKind::Full) => counts.0 += 1,
+        Some(MediaInhibitKind::Suspend) => counts.1 += 1,
+        None => {}
+    };
 
     for line in text.lines() {
         let trimmed = line.trim_start();
         let is_header = trimmed.starts_with("Sink Input #") || trimmed.starts_with("SinkInput #");
 
         if is_header {
-            if saw_header && sink_input_block_counts(&block, ignore_remote_media, media_blacklist) {
-                count += 1;
+            if saw_header {
+                count_block(&block, &mut counts);
             }
             block.clear();
             saw_header = true;
@@ -352,60 +404,69 @@ fn pactl_sink_input_count(
         }
     }
 
-    if saw_header && sink_input_block_counts(&block, ignore_remote_media, media_blacklist) {
-        count += 1;
+    if saw_header {
+        count_block(&block, &mut counts);
     }
 
-    Ok(count)
+    counts
 }
 
-fn sink_input_block_counts(
+fn sink_input_inhibit_kind(
     block: &str,
     ignore_remote_media: bool,
     media_blacklist: &[Pattern],
-) -> bool {
+    suspend_inhibit_media: &[Pattern],
+) -> Option<MediaInhibitKind> {
     let props = parse_pactl_properties(block);
 
     if props.is_empty() {
-        return false;
+        return None;
     }
 
     if sink_input_is_corked(block) {
-        return false;
+        return None;
     }
 
     if sink_input_is_muted(block) {
-        return false;
+        return None;
     }
 
     // Browser/media-session ownership belongs in dbus.rs. media.rs should only
     // act as a narrow local-audio fallback, so aggressively exclude browser,
     // TTS/synthetic, and other system-ish streams here.
     if sink_input_is_browser(&props) {
-        return false;
+        return None;
     }
 
     if sink_input_is_synthetic_or_tts(&props) {
-        return false;
+        return None;
     }
 
     if sink_input_is_systemish(&props) {
-        return false;
+        return None;
     }
 
     if sink_input_is_game(&props) {
-        return false;
+        return None;
     }
 
     if sink_input_is_blacklisted(media_blacklist, &props) {
-        return false;
+        return None;
     }
 
     if ignore_remote_media && sink_input_is_remote(&props) {
-        return false;
+        return None;
     }
 
-    true
+    let hay_lc = sink_input_haystack(&props);
+    if suspend_inhibit_media
+        .iter()
+        .any(|pattern| pattern.matches_lc(&hay_lc))
+    {
+        Some(MediaInhibitKind::Suspend)
+    } else {
+        Some(MediaInhibitKind::Full)
+    }
 }
 
 fn sink_input_is_corked(block: &str) -> bool {
@@ -661,4 +722,85 @@ fn patterns_same(a: &[Pattern], b: &[Pattern]) -> bool {
         .map(pattern_key)
         .zip(b.iter().map(pattern_key))
         .all(|(x, y)| x == y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn literal(value: &str) -> Pattern {
+        Pattern::Literal(value.to_string())
+    }
+
+    #[test]
+    fn counts_full_and_suspend_only_streams_separately() {
+        let text = r#"
+Sink Input #1
+    Corked: no
+    Mute: no
+    Properties:
+        application.name = "Spotify"
+        media.title = "Album"
+Sink Input #2
+    Corked: no
+    Mute: no
+    Properties:
+        application.name = "VLC media player"
+        media.title = "Film"
+"#;
+
+        assert_eq!(
+            pactl_text_counts(text, false, &[], &[literal("spotify")]),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn blacklist_and_remote_filters_take_precedence_over_suspend_rules() {
+        let text = r#"
+Sink Input #1
+    Corked: no
+    Mute: no
+    Properties:
+        application.name = "Spotify"
+Sink Input #2
+    Corked: no
+    Mute: no
+    Properties:
+        application.name = "Spotify Connect"
+"#;
+        let suspend = [literal("spotify")];
+
+        assert_eq!(
+            pactl_text_counts(text, true, &[literal("spotify")], &suspend),
+            (0, 0)
+        );
+        assert_eq!(pactl_text_counts(text, true, &[], &suspend), (0, 1));
+    }
+
+    #[test]
+    fn inactive_and_browser_streams_are_not_inhibitors() {
+        let text = r#"
+Sink Input #1
+    Corked: yes
+    Mute: no
+    Properties:
+        application.name = "Spotify"
+Sink Input #2
+    Corked: no
+    Mute: yes
+    Properties:
+        application.name = "VLC media player"
+Sink Input #3
+    Corked: no
+    Mute: no
+    Properties:
+        application.name = "Firefox"
+"#;
+
+        assert_eq!(
+            pactl_text_counts(text, false, &[], &[literal("spotify")]),
+            (0, 0)
+        );
+    }
 }

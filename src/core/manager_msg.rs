@@ -44,5 +44,6 @@ pub enum ManagerMsg {
         monitor_media: bool,
         ignore_remote_media: bool,
         media_blacklist: Vec<Pattern>,
+        suspend_inhibit_media: Vec<Pattern>,
     },
 }

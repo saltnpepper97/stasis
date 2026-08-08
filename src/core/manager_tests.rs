@@ -3,10 +3,10 @@
 
 use crate::core::action::Action;
 use crate::core::config::{
-    Config, ConfigFile, MediaInhibitScope, PartialConfig, Pattern, PlanSource, PlanStep,
-    PlanStepKind, Profile, ProfileMode,
+    Config, ConfigFile, PartialConfig, Pattern, PlanSource, PlanStep, PlanStepKind, Profile,
+    ProfileMode,
 };
-use crate::core::events::{ActivityKind, Event, LockSource, MediaState};
+use crate::core::events::{ActivityKind, Event, LockSource};
 use crate::core::manager::Manager;
 use crate::core::state::State;
 
@@ -926,24 +926,15 @@ fn low_power_still_fires_while_suspend_is_held() {
 #[test]
 fn suspend_scoped_media_does_not_reset_the_idle_cycle_when_playback_ends() {
     let plan = vec![step(PlanStepKind::Suspend, 10, "suspend")];
-    let mut cfg_file = cfg_with_plan(plan);
-    cfg_file.default.media_inhibit_scope = MediaInhibitScope::Suspend;
-    let mut mgr = Manager::new(cfg_file);
+    let mut mgr = Manager::new(cfg_with_plan(plan));
     let mut state = State::new(0);
     enter_idle(&mut mgr, &mut state, 0);
 
     mgr.handle_event(
         &mut state,
         Event::MediaInhibitorCount {
-            count: 1,
-            now_ms: 4_000,
-        },
-    )
-    .unwrap();
-    mgr.handle_event(
-        &mut state,
-        Event::MediaStateChanged {
-            state: MediaState::PlayingLocal,
+            count: 0,
+            suspend_count: 1,
             now_ms: 4_000,
         },
     )
@@ -952,14 +943,7 @@ fn suspend_scoped_media_does_not_reset_the_idle_cycle_when_playback_ends() {
         &mut state,
         Event::MediaInhibitorCount {
             count: 0,
-            now_ms: 14_000,
-        },
-    )
-    .unwrap();
-    mgr.handle_event(
-        &mut state,
-        Event::MediaStateChanged {
-            state: MediaState::Idle,
+            suspend_count: 0,
             now_ms: 14_000,
         },
     )
@@ -977,6 +961,40 @@ fn suspend_scoped_media_does_not_reset_the_idle_cycle_when_playback_ends() {
             .len(),
         1
     );
+}
+
+#[test]
+fn full_media_ending_resets_the_idle_cycle_even_if_suspend_media_remains() {
+    let plan = vec![step(PlanStepKind::Suspend, 10, "suspend")];
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::MediaInhibitorCount {
+            count: 1,
+            suspend_count: 1,
+            now_ms: 4_000,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+
+    mgr.handle_event(
+        &mut state,
+        Event::MediaInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 14_000,
+        },
+    )
+    .unwrap();
+
+    assert!(!state.paused());
+    assert!(state.debounce_pending());
+    assert_eq!(state.media_inhibitor_count(), 0);
+    assert_eq!(state.suspend_media_inhibitor_count(), 1);
 }
 
 #[test]
@@ -1014,14 +1032,13 @@ fn manual_suspend_trigger_bypasses_suspend_inhibitors() {
 fn info_reports_suspend_only_configuration_and_live_hold() {
     let plan = vec![step(PlanStepKind::Suspend, 100, "suspend")];
     let mut cfg_file = cfg_with_plan(plan);
-    cfg_file.default.media_inhibit_scope = MediaInhibitScope::Suspend;
-    cfg_file.default.suspend_inhibit_apps = vec![Pattern::Literal("spotify".to_string())];
+    cfg_file.default.suspend_inhibit_media = vec![Pattern::Literal("spotify".to_string())];
     let mut mgr = Manager::new(cfg_file);
     let mut state = State::new(0);
     enter_idle(&mut mgr, &mut state, 0);
     mgr.handle_event(
         &mut state,
-        Event::AppInhibitorCount {
+        Event::MediaInhibitorCount {
             count: 0,
             suspend_count: 1,
             now_ms: 1_000,
@@ -1031,14 +1048,21 @@ fn info_reports_suspend_only_configuration_and_live_hold() {
 
     let snapshot = mgr.snapshot(&state, 4_000);
     assert!(snapshot.pretty_text.contains("State: active"));
-    assert!(snapshot.pretty_text.contains("Apps Blocking Suspend: 1"));
+    assert!(
+        snapshot
+            .pretty_text
+            .contains("Media Players Blocking Suspend: 1")
+    );
     assert!(
         snapshot
             .pretty_text
             .contains("Next: Suspend inhibited for 3s")
     );
-    assert!(snapshot.pretty_text.contains("MediaInhibitScope: suspend"));
-    assert!(snapshot.pretty_text.contains("SuspendInhibitApps: spotify"));
+    assert!(
+        snapshot
+            .pretty_text
+            .contains("SuspendInhibitMedia: spotify")
+    );
 
     let watch = mgr.watch_event(&state);
     assert_eq!(watch.state, "active");
@@ -1052,7 +1076,7 @@ fn profile_change_clears_stale_counts_and_reclassifies_media() {
         name: "music".to_string(),
         mode: ProfileMode::Overlay,
         config: PartialConfig {
-            media_inhibit_scope: Some(MediaInhibitScope::Suspend),
+            suspend_inhibit_media: Some(vec![Pattern::Literal("spotify".to_string())]),
             ..PartialConfig::default()
         },
     });
@@ -1064,6 +1088,7 @@ fn profile_change_clears_stale_counts_and_reclassifies_media() {
         &mut state,
         Event::MediaInhibitorCount {
             count: 1,
+            suspend_count: 0,
             now_ms: 1_000,
         },
     )
@@ -1087,7 +1112,8 @@ fn profile_change_clears_stale_counts_and_reclassifies_media() {
     mgr.handle_event(
         &mut state,
         Event::MediaInhibitorCount {
-            count: 1,
+            count: 0,
+            suspend_count: 1,
             now_ms: 4_000,
         },
     )

@@ -3,9 +3,9 @@
 
 use crate::core::{
     action::Action,
-    config::{Config, MediaInhibitScope, PlanSource, PlanStep, PlanStepKind},
+    config::{Config, PlanSource, PlanStep, PlanStepKind},
     error::{ConfigError, Error, StateError},
-    events::{Event, LockSource, MediaState, PowerState},
+    events::{Event, LockSource, PowerState},
     state::State,
 };
 
@@ -376,30 +376,19 @@ impl Manager {
                 self.refresh_timing_holds(state, &cfg, now_ms);
             }
 
-            Event::MediaInhibitorCount { count, .. } => {
-                match cfg.media_inhibit_scope {
-                    MediaInhibitScope::All => {
-                        state.set_media_inhibitor_count(count);
-                        state.set_suspend_media_inhibitor_count(0);
-                    }
-                    MediaInhibitScope::Suspend => {
-                        state.set_media_inhibitor_count(0);
-                        state.set_suspend_media_inhibitor_count(count);
-                    }
-                }
-                self.refresh_timing_holds(state, &cfg, now_ms);
-            }
-
-            Event::MediaStateChanged { state: m, .. } => {
+            Event::MediaInhibitorCount {
+                count,
+                suspend_count,
+                ..
+            } => {
                 let was_paused = state.paused();
+                let full_media_ended = state.media_inhibitor_count() > 0 && count == 0;
 
-                let old = self.last_media;
-                self.last_media = m;
+                state.set_media_inhibitor_count(count);
+                state.set_suspend_media_inhibitor_count(suspend_count);
+                self.refresh_timing_holds(state, &cfg, now_ms);
 
-                let media_ended =
-                    matches!(old, MediaState::PlayingLocal) && matches!(m, MediaState::Idle);
-
-                if media_ended && cfg.media_inhibit_scope == MediaInhibitScope::All {
+                if full_media_ended {
                     self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
 
                     // Keep the log, but do not notify here.
@@ -407,8 +396,6 @@ impl Manager {
                     if was_paused && !state.paused() {
                         eventline::info!("media ended");
                     }
-                } else {
-                    self.refresh_timing_holds(state, &cfg, now_ms);
                 }
             }
 
