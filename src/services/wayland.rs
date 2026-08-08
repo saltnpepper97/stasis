@@ -11,13 +11,8 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, WEnum,
-    protocol::{
-        wl_keyboard::WlKeyboard,
-        wl_pointer::WlPointer,
-        wl_registry,
-        wl_seat::{self, WlSeat},
-    },
+    Connection, Dispatch, QueueHandle,
+    protocol::{wl_registry, wl_seat::WlSeat},
 };
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::{Event as IdleEvent, ExtIdleNotificationV1},
@@ -26,6 +21,12 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 
 use crate::core::events::{ActivityKind, Event};
 use crate::core::manager_msg::ManagerMsg;
+
+const MAX_IDLE_NOTIFIER_VERSION: u32 = 2;
+
+fn supported_idle_notifier_version(advertised: u32) -> u32 {
+    advertised.min(MAX_IDLE_NOTIFIER_VERSION)
+}
 
 #[derive(Debug)]
 pub enum WaylandError {
@@ -44,36 +45,34 @@ impl std::fmt::Display for WaylandError {
 
 impl std::error::Error for WaylandError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdleNotificationKind {
+    InhibitorAware,
+    InputOnly,
+}
+
 struct WaylandState {
     tx: mpsc::Sender<ManagerMsg>,
 
     idle_notifier: Option<ExtIdleNotifierV1>,
+    idle_notifier_version: u32,
     seat: Option<WlSeat>,
-    notification: Option<ExtIdleNotificationV1>,
-
-    // Direct input listeners so activity is immediate (best-effort; focus rules apply)
-    pointer: Option<WlPointer>,
-    keyboard: Option<WlKeyboard>,
+    idle_notification: Option<ExtIdleNotificationV1>,
+    input_idle_notification: Option<ExtIdleNotificationV1>,
 
     idle_timeout_ms: u32,
-    compositor_edge_seen: Arc<AtomicBool>,
 }
 
 impl WaylandState {
-    fn new(
-        tx: mpsc::Sender<ManagerMsg>,
-        idle_timeout_ms: u32,
-        compositor_edge_seen: Arc<AtomicBool>,
-    ) -> Self {
+    fn new(tx: mpsc::Sender<ManagerMsg>, idle_timeout_ms: u32) -> Self {
         Self {
             tx,
             idle_notifier: None,
+            idle_notifier_version: 0,
             seat: None,
-            notification: None,
-            pointer: None,
-            keyboard: None,
+            idle_notification: None,
+            input_idle_notification: None,
             idle_timeout_ms,
-            compositor_edge_seen,
         }
     }
 
@@ -98,6 +97,22 @@ impl WaylandState {
             .tx
             .try_send(ManagerMsg::Event(Event::CompositorResumed { now_ms }));
     }
+
+    fn handle_idle_event(&self, kind: IdleNotificationKind, event: IdleEvent) {
+        match (kind, event) {
+            (IdleNotificationKind::InhibitorAware, IdleEvent::Idled) => {
+                self.emit_compositor_idled();
+            }
+            (IdleNotificationKind::InhibitorAware, IdleEvent::Resumed) => {
+                self.emit_compositor_resumed();
+            }
+            (IdleNotificationKind::InputOnly, IdleEvent::Resumed) => {
+                self.emit_activity();
+            }
+            (IdleNotificationKind::InputOnly, IdleEvent::Idled) => {}
+            _ => {}
+        }
+    }
 }
 
 // ---------------- Registry binding ----------------
@@ -112,13 +127,20 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandState {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
-            name, interface, ..
+            name,
+            interface,
+            version,
         } = event
         {
             match interface.as_str() {
                 "ext_idle_notifier_v1" => {
-                    state.idle_notifier =
-                        Some(registry.bind::<ExtIdleNotifierV1, _, _>(name, 1, qh, ()));
+                    state.idle_notifier_version = supported_idle_notifier_version(version);
+                    state.idle_notifier = Some(registry.bind::<ExtIdleNotifierV1, _, _>(
+                        name,
+                        state.idle_notifier_version,
+                        qh,
+                        (),
+                    ));
                 }
                 "wl_seat" => {
                     state.seat = Some(registry.bind::<WlSeat, _, _>(name, 1, qh, ()));
@@ -143,110 +165,31 @@ impl Dispatch<ExtIdleNotifierV1, ()> for WaylandState {
     }
 }
 
-// ---------------- Seat capabilities -> bind pointer/keyboard ----------------
-
 impl Dispatch<WlSeat, ()> for WaylandState {
     fn event(
-        state: &mut Self,
-        seat: &WlSeat,
-        event: wl_seat::Event,
-        _: &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_seat::Event::Capabilities { capabilities } => {
-                let caps = match capabilities {
-                    WEnum::Value(c) => c,
-                    WEnum::Unknown(_) => return,
-                };
-
-                if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-                    state.pointer = Some(seat.get_pointer(qh, ()));
-                    eventline::info!("wayland: wl_pointer active");
-                }
-
-                if caps.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                    state.keyboard = Some(seat.get_keyboard(qh, ()));
-                    eventline::info!("wayland: wl_keyboard active");
-                }
-            }
-            wl_seat::Event::Name { .. } => {}
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<WlPointer, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        _: &WlPointer,
-        event: wayland_client::protocol::wl_pointer::Event,
+        _: &mut Self,
+        _: &WlSeat,
+        _: <WlSeat as wayland_client::Proxy>::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        use wayland_client::protocol::wl_pointer::Event as PE;
-        match event {
-            PE::Motion { .. }
-            | PE::Button { .. }
-            | PE::Axis { .. }
-            | PE::AxisDiscrete { .. }
-            | PE::AxisValue120 { .. }
-            | PE::AxisStop { .. }
-            | PE::AxisSource { .. } => {
-                state.emit_activity();
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<WlKeyboard, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        _: &WlKeyboard,
-        event: wayland_client::protocol::wl_keyboard::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        use wayland_client::protocol::wl_keyboard::Event as KE;
-        match event {
-            KE::Key { .. } => {
-                state.emit_activity();
-            }
-            _ => {}
-        }
+        // no-op: the seat is only needed by ext-idle-notify.
     }
 }
 
 // ---------------- Idle notifications ----------------
 
-impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
+impl Dispatch<ExtIdleNotificationV1, IdleNotificationKind> for WaylandState {
     fn event(
         state: &mut Self,
         _: &ExtIdleNotificationV1,
         event: IdleEvent,
-        _: &(),
+        kind: &IdleNotificationKind,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        match event {
-            IdleEvent::Resumed => {
-                state.compositor_edge_seen.store(true, Ordering::Relaxed);
-                // Note: niri may not send this reliably, but when it does, treat as activity.
-                state.emit_compositor_resumed();
-                state.emit_activity();
-            }
-            IdleEvent::Idled => {
-                state.compositor_edge_seen.store(true, Ordering::Relaxed);
-                state.emit_compositor_idled();
-                // Intentionally do NOT drive plan timing from this event.
-                // Tick remains the source of truth for time-based firing.
-            }
-            _ => {}
-        }
+        state.handle_idle_event(*kind, event);
     }
 }
 
@@ -293,35 +236,32 @@ pub async fn run_wayland(
     let qh = event_queue.handle();
     let display = conn.display();
 
-    let compositor_edge_seen = Arc::new(AtomicBool::new(false));
-    let tx_bootstrap = tx.clone();
-    let mut state = WaylandState::new(tx, idle_timeout_ms, compositor_edge_seen.clone());
+    let mut state = WaylandState::new(tx, idle_timeout_ms);
 
     let _registry = display.get_registry(&qh, ());
     event_queue
         .roundtrip(&mut state)
         .map_err(|e| WaylandError::Roundtrip(e.to_string()))?;
 
-    if let (Some(notifier), Some(seat)) = (&state.idle_notifier, &state.seat) {
-        let notification = notifier.get_idle_notification(state.idle_timeout_ms, seat, &qh, ());
-        state.notification = Some(notification);
-        eventline::info!("wayland: ext_idle_notifier_v1 active");
+    if let (Some(notifier), Some(seat)) = (state.idle_notifier.clone(), state.seat.clone()) {
+        state.idle_notification = Some(notifier.get_idle_notification(
+            state.idle_timeout_ms,
+            &seat,
+            &qh,
+            IdleNotificationKind::InhibitorAware,
+        ));
 
-        let mut shutdown_bootstrap = shutdown.clone();
-        let edge_seen = compositor_edge_seen.clone();
-        let boot_delay_ms = idle_timeout_ms as u64 + 150;
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(boot_delay_ms)) => {
-                    if !edge_seen.load(Ordering::Relaxed) {
-                        eventline::debug!("wayland: startup bootstrap compositor-idled");
-                        let now_ms = crate::core::utils::now_ms();
-                        let _ = tx_bootstrap.try_send(ManagerMsg::Event(Event::CompositorIdled { now_ms }));
-                    }
-                }
-                _ = shutdown_bootstrap.changed() => {}
-            }
-        });
+        if state.idle_notifier_version >= 2 {
+            state.input_idle_notification = Some(notifier.get_input_idle_notification(
+                state.idle_timeout_ms,
+                &seat,
+                &qh,
+                IdleNotificationKind::InputOnly,
+            ));
+            eventline::info!("wayland: ext_idle_notifier_v1 v2 active with input tracking");
+        } else {
+            eventline::info!("wayland: ext_idle_notifier_v1 v1 active (safe fallback)");
+        }
     } else {
         eventline::warn!(
             "wayland: ext_idle_notifier_v1 or wl_seat missing; idle notifier disabled"
@@ -415,4 +355,54 @@ pub async fn run_wayland(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    fn test_state() -> (WaylandState, mpsc::Receiver<ManagerMsg>) {
+        let (tx, rx) = mpsc::channel(8);
+        (WaylandState::new(tx, 250), rx)
+    }
+
+    fn recv_event(rx: &mut mpsc::Receiver<ManagerMsg>) -> Event {
+        match rx.try_recv().expect("expected routed Wayland event") {
+            ManagerMsg::Event(event) => event,
+            other => panic!("expected manager event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn idle_notifier_version_uses_v1_fallback_and_caps_at_v2() {
+        assert_eq!(supported_idle_notifier_version(1), 1);
+        assert_eq!(supported_idle_notifier_version(2), 2);
+        assert_eq!(supported_idle_notifier_version(3), 2);
+    }
+
+    #[test]
+    fn input_idle_notification_only_emits_activity_on_resume() {
+        let (state, mut rx) = test_state();
+
+        state.handle_idle_event(IdleNotificationKind::InputOnly, IdleEvent::Idled);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+
+        state.handle_idle_event(IdleNotificationKind::InputOnly, IdleEvent::Resumed);
+        assert!(matches!(recv_event(&mut rx), Event::UserActivity { .. }));
+    }
+
+    #[test]
+    fn inhibitor_aware_notification_emits_compositor_edges() {
+        let (state, mut rx) = test_state();
+
+        state.handle_idle_event(IdleNotificationKind::InhibitorAware, IdleEvent::Idled);
+        assert!(matches!(recv_event(&mut rx), Event::CompositorIdled { .. }));
+
+        state.handle_idle_event(IdleNotificationKind::InhibitorAware, IdleEvent::Resumed);
+        assert!(matches!(
+            recv_event(&mut rx),
+            Event::CompositorResumed { .. }
+        ));
+    }
 }
