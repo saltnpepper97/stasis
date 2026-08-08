@@ -29,6 +29,25 @@ pub enum PlanSource {
     Battery,
 }
 
+/// Which automatic idle actions media playback should inhibit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaInhibitScope {
+    /// Preserve the historical behavior: media pauses the entire idle plan.
+    #[default]
+    All,
+    /// Allow earlier idle actions, but prevent the automatic suspend step.
+    Suspend,
+}
+
+impl fmt::Display for MediaInhibitScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => write!(f, "all"),
+            Self::Suspend => write!(f, "suspend"),
+        }
+    }
+}
+
 /// What kind of step this is in the ordered execution plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanStepKind {
@@ -145,6 +164,7 @@ pub struct Config {
 
     pub monitor_media: bool,
     pub ignore_remote_media: bool,
+    pub media_inhibit_scope: MediaInhibitScope,
 
     /// Media sources/apps to ignore for media inhibit (case-insensitive; loader normalizes).
     pub media_blacklist: Vec<Pattern>,
@@ -158,6 +178,9 @@ pub struct Config {
 
     /// Process/class patterns or names that should inhibit idle behavior.
     pub inhibit_apps: Vec<Pattern>,
+
+    /// Process/class patterns or names that should inhibit only automatic suspend.
+    pub suspend_inhibit_apps: Vec<Pattern>,
 
     // ---- legacy named blocks (still useful for config authoring) ----
     pub startup: ActionBlock,
@@ -197,6 +220,7 @@ impl Config {
 
             monitor_media: false,
             ignore_remote_media: false,
+            media_inhibit_scope: MediaInhibitScope::All,
             media_blacklist: Vec::new(),
 
             debounce_seconds: 0,
@@ -206,6 +230,7 @@ impl Config {
             notification_icon: Some(DEFAULT_NOTIFICATION_ICON.to_string()),
 
             inhibit_apps: Vec::new(),
+            suspend_inhibit_apps: Vec::new(),
 
             startup: ActionBlock::disabled(),
             brightness: ActionBlock::disabled(),
@@ -376,6 +401,7 @@ pub struct PartialConfig {
 
     pub monitor_media: Option<bool>,
     pub ignore_remote_media: Option<bool>,
+    pub media_inhibit_scope: Option<MediaInhibitScope>,
 
     pub media_blacklist: Option<Vec<Pattern>>,
     pub debounce_seconds: Option<u64>,
@@ -385,6 +411,7 @@ pub struct PartialConfig {
     pub notification_icon: Option<Option<String>>,
 
     pub inhibit_apps: Option<Vec<Pattern>>,
+    pub suspend_inhibit_apps: Option<Vec<Pattern>>,
 
     // ---- plan sources ----
     pub plan_desktop: Option<Vec<PlanStep>>,
@@ -454,6 +481,9 @@ impl PartialConfig {
         if let Some(v) = self.ignore_remote_media {
             base.ignore_remote_media = v;
         }
+        if let Some(v) = self.media_inhibit_scope {
+            base.media_inhibit_scope = v;
+        }
 
         if let Some(v) = &self.media_blacklist {
             base.media_blacklist = v.clone();
@@ -475,6 +505,9 @@ impl PartialConfig {
 
         if let Some(v) = &self.inhibit_apps {
             base.inhibit_apps = v.clone();
+        }
+        if let Some(v) = &self.suspend_inhibit_apps {
+            base.suspend_inhibit_apps = v.clone();
         }
 
         // ---- legacy blocks ----
