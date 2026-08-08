@@ -2,8 +2,11 @@
 // License: GPL-3.0-only
 
 use crate::core::action::Action;
-use crate::core::config::{Config, ConfigFile, PlanSource, PlanStep, PlanStepKind};
-use crate::core::events::{ActivityKind, Event, LockSource};
+use crate::core::config::{
+    Config, ConfigFile, MediaInhibitScope, PartialConfig, Pattern, PlanSource, PlanStep,
+    PlanStepKind, Profile, ProfileMode,
+};
+use crate::core::events::{ActivityKind, Event, LockSource, MediaState};
 use crate::core::manager::Manager;
 use crate::core::state::State;
 
@@ -752,4 +755,344 @@ fn low_power_disabled_never_fires() {
         .handle_event(&mut state, Event::Tick { now_ms: 1_000_000 })
         .unwrap();
     assert!(actions.iter().all(|a| !matches!(a, Action::EnterLowPower)));
+}
+
+#[test]
+fn suspend_only_app_allows_dpms_then_resumes_remaining_suspend_timeout() {
+    let plan = vec![
+        step(PlanStepKind::Dpms, 5, "dpms"),
+        step(PlanStepKind::Suspend, 10, "suspend"),
+    ];
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+    enter_idle(&mut mgr, &mut state, 0);
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 5_000 })
+        .unwrap();
+    assert_eq!(
+        actions,
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+    assert_eq!(state.suspend_hold_started_ms(), Some(5_000));
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 20_000 })
+        .unwrap();
+    assert!(actions.is_empty());
+
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 0,
+            now_ms: 20_000,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 29_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 30_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "suspend".to_string()
+        }]
+    );
+}
+
+#[test]
+fn suspend_hold_preserves_elapsed_time_when_it_starts_mid_timeout() {
+    let plan = vec![step(PlanStepKind::Suspend, 10, "suspend")];
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 4_000,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 0,
+            now_ms: 14_000,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 19_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 20_000 })
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn global_and_suspend_holds_do_not_double_pause_the_timer() {
+    let plan = vec![step(PlanStepKind::Suspend, 10, "suspend")];
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    for (now_ms, count, suspend_count) in
+        [(2_000, 0, 1), (5_000, 1, 1), (10_000, 0, 1), (14_000, 0, 0)]
+    {
+        mgr.handle_event(
+            &mut state,
+            Event::AppInhibitorCount {
+                count,
+                suspend_count,
+                now_ms,
+            },
+        )
+        .unwrap();
+    }
+
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 21_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 22_000 })
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn low_power_still_fires_while_suspend_is_held() {
+    let plan = vec![
+        step(PlanStepKind::Dpms, 1, "dpms"),
+        step(PlanStepKind::Suspend, 100, "suspend"),
+    ];
+    let mut cfg_file = cfg_with_plan(plan);
+    cfg_file.default.low_power_when_idle = true;
+    cfg_file.default.low_power_when_idle_timeout = 2;
+    let mut mgr = Manager::new(cfg_file);
+    let mut state = State::new(0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 0,
+        },
+    )
+    .unwrap();
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+        .unwrap();
+
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 3_000 })
+            .unwrap(),
+        vec![Action::EnterLowPower]
+    );
+    assert!(!state.paused());
+}
+
+#[test]
+fn suspend_scoped_media_does_not_reset_the_idle_cycle_when_playback_ends() {
+    let plan = vec![step(PlanStepKind::Suspend, 10, "suspend")];
+    let mut cfg_file = cfg_with_plan(plan);
+    cfg_file.default.media_inhibit_scope = MediaInhibitScope::Suspend;
+    let mut mgr = Manager::new(cfg_file);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::MediaInhibitorCount {
+            count: 1,
+            now_ms: 4_000,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::MediaStateChanged {
+            state: MediaState::PlayingLocal,
+            now_ms: 4_000,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::MediaInhibitorCount {
+            count: 0,
+            now_ms: 14_000,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::MediaStateChanged {
+            state: MediaState::Idle,
+            now_ms: 14_000,
+        },
+    )
+    .unwrap();
+
+    assert!(!state.debounce_pending());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 19_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 20_000 })
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn manual_suspend_trigger_bypasses_suspend_inhibitors() {
+    let plan = vec![step(PlanStepKind::Suspend, 100, "suspend")];
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 1,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        mgr.handle_event(
+            &mut state,
+            Event::ManualTrigger {
+                name: "suspend".to_string(),
+                now_ms: 2,
+            },
+        )
+        .unwrap(),
+        vec![Action::RunCommand {
+            command: "suspend".to_string()
+        }]
+    );
+}
+
+#[test]
+fn info_reports_suspend_only_configuration_and_live_hold() {
+    let plan = vec![step(PlanStepKind::Suspend, 100, "suspend")];
+    let mut cfg_file = cfg_with_plan(plan);
+    cfg_file.default.media_inhibit_scope = MediaInhibitScope::Suspend;
+    cfg_file.default.suspend_inhibit_apps = vec![Pattern::Literal("spotify".to_string())];
+    let mut mgr = Manager::new(cfg_file);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+
+    let snapshot = mgr.snapshot(&state, 4_000);
+    assert!(snapshot.pretty_text.contains("State: active"));
+    assert!(snapshot.pretty_text.contains("Apps Blocking Suspend: 1"));
+    assert!(
+        snapshot
+            .pretty_text
+            .contains("Next: Suspend inhibited for 3s")
+    );
+    assert!(snapshot.pretty_text.contains("MediaInhibitScope: suspend"));
+    assert!(snapshot.pretty_text.contains("SuspendInhibitApps: spotify"));
+
+    let watch = mgr.watch_event(&state);
+    assert_eq!(watch.state, "active");
+    assert!(!watch.paused);
+}
+
+#[test]
+fn profile_change_clears_stale_counts_and_reclassifies_media() {
+    let mut cfg_file = cfg_with_plan(vec![step(PlanStepKind::Suspend, 100, "suspend")]);
+    cfg_file.profiles.push(Profile {
+        name: "music".to_string(),
+        mode: ProfileMode::Overlay,
+        config: PartialConfig {
+            media_inhibit_scope: Some(MediaInhibitScope::Suspend),
+            ..PartialConfig::default()
+        },
+    });
+
+    let mut mgr = Manager::new(cfg_file);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(
+        &mut state,
+        Event::MediaInhibitorCount {
+            count: 1,
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    assert_eq!(state.media_inhibitor_count(), 1);
+
+    mgr.handle_event(
+        &mut state,
+        Event::ProfileChanged {
+            name: "music".to_string(),
+            now_ms: 2_000,
+        },
+    )
+    .unwrap();
+    assert!(!state.paused());
+    assert_eq!(state.media_inhibitor_count(), 0);
+    assert_eq!(state.suspend_media_inhibitor_count(), 0);
+
+    enter_idle(&mut mgr, &mut state, 3_000);
+    mgr.handle_event(
+        &mut state,
+        Event::MediaInhibitorCount {
+            count: 1,
+            now_ms: 4_000,
+        },
+    )
+    .unwrap();
+    assert!(!state.paused());
+    assert_eq!(state.media_inhibitor_count(), 0);
+    assert_eq!(state.suspend_media_inhibitor_count(), 1);
 }

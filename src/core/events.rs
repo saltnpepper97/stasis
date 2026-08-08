@@ -127,6 +127,7 @@ pub enum Event {
 
     AppInhibitorCount {
         count: u64,
+        suspend_count: u64,
         now_ms: u64,
     },
     MediaInhibitorCount {

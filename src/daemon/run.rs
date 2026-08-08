@@ -82,6 +82,7 @@ impl Daemon {
         let (app_rules_tx, app_rules_rx) = watch::channel(crate::services::app_inhibit::AppRules {
             epoch: self.inhibit_epoch,
             apps: self.inhibit_apps.clone(),
+            suspend_apps: self.suspend_inhibit_apps.clone(),
         });
         tokio::spawn(crate::services::app_inhibit::run_app_inhibit(
             tx.clone(),
@@ -170,9 +171,10 @@ impl Daemon {
                             }
                         }
 
-                        ManagerMsg::UpdateInhibitRules { epoch, inhibit_apps, monitor_media, ignore_remote_media, media_blacklist } => {
+                        ManagerMsg::UpdateInhibitRules { epoch, inhibit_apps, suspend_inhibit_apps, monitor_media, ignore_remote_media, media_blacklist } => {
                             self.inhibit_epoch = epoch;
                             self.inhibit_apps = inhibit_apps.clone();
+                            self.suspend_inhibit_apps = suspend_inhibit_apps.clone();
                             self.monitor_media = monitor_media;
                             self.ignore_remote_media = ignore_remote_media;
                             self.media_blacklist = media_blacklist.clone();
@@ -180,6 +182,7 @@ impl Daemon {
                             let _ = app_rules_tx.send(crate::services::app_inhibit::AppRules {
                                 epoch,
                                 apps: inhibit_apps,
+                                suspend_apps: suspend_inhibit_apps,
                             });
 
                             let _ = media_rules_tx.send(crate::services::media::MediaRules {

@@ -3,7 +3,7 @@
 
 use crate::core::{
     action::Action,
-    config::{Config, PlanSource, PlanStep, PlanStepKind},
+    config::{Config, MediaInhibitScope, PlanSource, PlanStep, PlanStepKind},
     error::{ConfigError, Error, StateError},
     events::{Event, LockSource, MediaState, PowerState},
     state::State,
@@ -23,7 +23,7 @@ impl Manager {
         state.ensure_plan_len(cfg.plan.len());
         state.set_debounce_seconds(cfg.debounce_seconds);
 
-        self.refresh_paused(state, now_ms);
+        self.refresh_timing_holds(state, &cfg, now_ms);
 
         let mut out = Vec::new();
 
@@ -57,6 +57,7 @@ impl Manager {
 
                 self.advance_past_lock_if_needed(state, &cfg);
                 out.extend(self.maybe_fire_next_step(state, &cfg, now_ms));
+                self.refresh_timing_holds(state, &cfg, now_ms);
 
                 // Low-power: fire after the DPMS step has run and the configured
                 // timeout has elapsed since DPMS fired.
@@ -84,6 +85,7 @@ impl Manager {
                 // Resume promptly only when that verified idle state is still current.
                 if state.compositor_idle() && state.debounce_pending() && !state.paused() {
                     Self::begin_idle_timing(state, now_ms);
+                    self.refresh_timing_holds(state, &cfg, now_ms);
                 }
             }
 
@@ -92,7 +94,7 @@ impl Manager {
                     return Err(Error::InvalidState(StateError::AlreadyPaused));
                 }
                 state.set_manually_paused(true);
-                self.refresh_paused(state, now_ms);
+                self.refresh_timing_holds(state, &cfg, now_ms);
             }
 
             Event::ManualResume { .. } => {
@@ -166,6 +168,7 @@ impl Manager {
                         state.set_debounce_pending(false);
                         state.set_step_base_ms(now_ms);
                         state.set_step_index(cfg.plan.len());
+                        state.set_suspend_hold_started_ms(None);
                     }
 
                     return Ok(out);
@@ -188,6 +191,7 @@ impl Manager {
                         state.set_step_base_ms(now_ms);
                         state.set_debounce_pending(false);
                         state.set_pre_action_notify_sent(false);
+                        state.set_suspend_hold_started_ms(None);
                     }
 
                     out.extend(emitted);
@@ -246,7 +250,7 @@ impl Manager {
 
             Event::PrepareForSleep { .. } => {
                 state.set_system_paused(true);
-                self.refresh_paused(state, now_ms);
+                self.refresh_timing_holds(state, &cfg, now_ms);
 
                 if let Some(cmd) = &cfg.prepare_sleep_command {
                     let c = cmd.trim().to_string();
@@ -265,7 +269,7 @@ impl Manager {
             Event::LidClosed { .. } => {
                 // Lid close pauses the plan timers.
                 state.set_system_paused(true);
-                self.refresh_paused(state, now_ms);
+                self.refresh_timing_holds(state, &cfg, now_ms);
 
                 // Run configured lid-close command (if any).
                 if let Some(cmd) = &cfg.lid_close_action {
@@ -317,7 +321,9 @@ impl Manager {
 
                 state.set_app_inhibitor_count(0);
                 state.set_media_inhibitor_count(0);
-                self.refresh_paused(state, now_ms);
+                state.set_suspend_app_inhibitor_count(0);
+                state.set_suspend_media_inhibitor_count(0);
+                self.refresh_timing_holds(state, &cfg, now_ms);
 
                 self.restore_low_power_if_active(state, &mut out);
                 state.reset_idle_cycle(now_ms);
@@ -327,7 +333,7 @@ impl Manager {
                 state.ensure_plan_len(cfg.plan.len());
                 state.set_debounce_seconds(cfg.debounce_seconds);
 
-                self.refresh_paused(state, now_ms);
+                self.refresh_timing_holds(state, &cfg, now_ms);
                 self.sync_step_index_after_startup_instants(state, &cfg);
                 self.advance_past_lock_if_needed(state, &cfg);
 
@@ -352,7 +358,7 @@ impl Manager {
                 state.ensure_plan_len(cfg.plan.len());
                 state.set_debounce_seconds(cfg.debounce_seconds);
 
-                self.refresh_paused(state, now_ms);
+                self.refresh_timing_holds(state, &cfg, now_ms);
                 self.sync_step_index_after_startup_instants(state, &cfg);
                 self.advance_past_lock_if_needed(state, &cfg);
 
@@ -360,14 +366,28 @@ impl Manager {
                 self.sync_step_index_after_startup_instants(state, &cfg);
             }
 
-            Event::AppInhibitorCount { count, .. } => {
+            Event::AppInhibitorCount {
+                count,
+                suspend_count,
+                ..
+            } => {
                 state.set_app_inhibitor_count(count);
-                self.refresh_paused(state, now_ms);
+                state.set_suspend_app_inhibitor_count(suspend_count);
+                self.refresh_timing_holds(state, &cfg, now_ms);
             }
 
             Event::MediaInhibitorCount { count, .. } => {
-                state.set_media_inhibitor_count(count);
-                self.refresh_paused(state, now_ms);
+                match cfg.media_inhibit_scope {
+                    MediaInhibitScope::All => {
+                        state.set_media_inhibitor_count(count);
+                        state.set_suspend_media_inhibitor_count(0);
+                    }
+                    MediaInhibitScope::Suspend => {
+                        state.set_media_inhibitor_count(0);
+                        state.set_suspend_media_inhibitor_count(count);
+                    }
+                }
+                self.refresh_timing_holds(state, &cfg, now_ms);
             }
 
             Event::MediaStateChanged { state: m, .. } => {
@@ -379,7 +399,7 @@ impl Manager {
                 let media_ended =
                     matches!(old, MediaState::PlayingLocal) && matches!(m, MediaState::Idle);
 
-                if media_ended {
+                if media_ended && cfg.media_inhibit_scope == MediaInhibitScope::All {
                     self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
 
                     // Keep the log, but do not notify here.
@@ -388,7 +408,7 @@ impl Manager {
                         eventline::info!("media ended");
                     }
                 } else {
-                    self.refresh_paused(state, now_ms);
+                    self.refresh_timing_holds(state, &cfg, now_ms);
                 }
             }
 
@@ -421,6 +441,7 @@ impl Manager {
                     }
 
                     Self::begin_idle_timing(state, now_ms);
+                    self.refresh_timing_holds(state, &cfg, now_ms);
                 }
             }
         }
@@ -454,13 +475,13 @@ impl Manager {
             let post_lock_start = self.first_enabled_step_after_lock(cfg);
             state.restart_post_lock_segment(now_ms, post_lock_start);
 
-            self.refresh_paused(state, now_ms);
+            self.refresh_timing_holds(state, cfg, now_ms);
 
             return;
         }
 
         state.reset_idle_cycle(now_ms);
-        self.refresh_paused(state, now_ms);
+        self.refresh_timing_holds(state, cfg, now_ms);
 
         self.sync_step_index_after_startup_instants(state, cfg);
 
@@ -516,25 +537,71 @@ impl Manager {
         }
     }
 
-    fn refresh_paused(&self, state: &mut State, now_ms: u64) {
+    fn refresh_timing_holds(&self, state: &mut State, cfg: &Config, now_ms: u64) {
         let new_paused =
             state.manually_paused() || state.inhibitors_active() || state.system_paused();
         let was_paused = state.paused();
 
         if !was_paused && new_paused {
+            self.finish_suspend_hold(state, now_ms);
             state.set_pause_started_ms(Some(now_ms));
         } else if was_paused && !new_paused {
-            if let Some(t0) = state.take_pause_started_ms() {
-                let dt = now_ms.saturating_sub(t0);
-                state.set_step_base_ms(state.step_base_ms().saturating_add(dt));
-
-                if state.pre_action_notify_sent() {
-                    state.set_pre_action_notify_ms(state.pre_action_notify_ms().saturating_add(dt));
-                }
-            }
+            let started_ms = state.take_pause_started_ms();
+            Self::shift_step_timing_from(state, started_ms, now_ms);
         }
 
         state.set_paused(new_paused);
+
+        if new_paused {
+            state.set_suspend_hold_started_ms(None);
+            return;
+        }
+
+        let should_hold = !state.debounce_pending()
+            && state.suspend_inhibitors_active()
+            && Self::next_runnable_step_is_suspend(state, cfg);
+
+        if should_hold {
+            if state.suspend_hold_started_ms().is_none() {
+                state.set_suspend_hold_started_ms(Some(now_ms));
+            }
+        } else {
+            self.finish_suspend_hold(state, now_ms);
+        }
+    }
+
+    fn finish_suspend_hold(&self, state: &mut State, now_ms: u64) {
+        let started_ms = state.take_suspend_hold_started_ms();
+        Self::shift_step_timing_from(state, started_ms, now_ms);
+    }
+
+    fn shift_step_timing_from(state: &mut State, started_ms: Option<u64>, now_ms: u64) {
+        let Some(started_ms) = started_ms else {
+            return;
+        };
+
+        let elapsed_ms = now_ms.saturating_sub(started_ms);
+        state.set_step_base_ms(state.step_base_ms().saturating_add(elapsed_ms));
+
+        if state.pre_action_notify_sent() {
+            state.set_pre_action_notify_ms(state.pre_action_notify_ms().saturating_add(elapsed_ms));
+        }
+    }
+
+    fn next_runnable_step_is_suspend(state: &State, cfg: &Config) -> bool {
+        let mut idx = state.step_index();
+        while idx < cfg.plan.len() && !cfg.plan[idx].enabled() {
+            idx += 1;
+        }
+
+        if idx < cfg.plan.len() && Self::is_lock_step(&cfg.plan[idx]) && state.is_locked() {
+            idx += 1;
+            while idx < cfg.plan.len() && !cfg.plan[idx].enabled() {
+                idx += 1;
+            }
+        }
+
+        idx < cfg.plan.len() && matches!(cfg.plan[idx].kind, PlanStepKind::Suspend)
     }
 
     pub(super) fn normalize_trigger_name(s: &str) -> String {
@@ -732,6 +799,12 @@ impl Manager {
             }
 
             let step = &cfg.plan[idx];
+            if matches!(step.kind, PlanStepKind::Suspend) && state.suspend_inhibitors_active() {
+                self.refresh_timing_holds(state, cfg, now_ms);
+                state.set_step_index(idx);
+                return out;
+            }
+
             if step.is_instant() {
                 if state.one_shot_has_fired_step(step) {
                     idx += 1;

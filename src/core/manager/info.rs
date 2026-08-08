@@ -63,6 +63,8 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
 
     let app = state.app_inhibitor_count();
     let media = state.media_inhibitor_count();
+    let suspend_app = state.suspend_app_inhibitor_count();
+    let suspend_media = state.suspend_media_inhibitor_count();
 
     out.push_str(&format!(
         "Manual Pause: {}\n",
@@ -71,6 +73,11 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
     out.push_str(&format!("Paused: {}\n", yesno(state.paused())));
     out.push_str(&format!("Apps Inhibiting: {}\n", app));
     out.push_str(&format!("Media Players Playing: {}\n", media));
+    out.push_str(&format!("Apps Blocking Suspend: {}\n", suspend_app));
+    out.push_str(&format!(
+        "Media Players Blocking Suspend: {}\n",
+        suspend_media
+    ));
     out.push_str(&format!(
         "D-Bus Inhibiting: {}\n",
         yesno(state.browser_activity_active(now_ms))
@@ -110,6 +117,8 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
 
     let app = state.app_inhibitor_count();
     let media = state.media_inhibitor_count();
+    let suspend_app = state.suspend_app_inhibitor_count();
+    let suspend_media = state.suspend_media_inhibitor_count();
 
     // Keep tooltip compact but consistent.
     t.push_str(&format!(
@@ -119,6 +128,11 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     t.push_str(&format!("Paused: {}\n", yesno(state.paused())));
     t.push_str(&format!("Apps Inhibiting: {}\n", app));
     t.push_str(&format!("Media Players Playing: {}\n", media));
+    t.push_str(&format!("Apps Blocking Suspend: {}\n", suspend_app));
+    t.push_str(&format!(
+        "Media Players Blocking Suspend: {}\n",
+        suspend_media
+    ));
     t.push_str(&format!(
         "D-Bus Inhibiting: {}\n",
         yesno(state.browser_activity_active(now_ms))
@@ -153,6 +167,7 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
     ));
 
     out.push_str(&format!("MonitorMedia: {}\n", yesno(cfg.monitor_media)));
+    out.push_str(&format!("MediaInhibitScope: {}\n", cfg.media_inhibit_scope));
     out.push_str(&format!(
         "IgnoreRemoteMedia: {}\n",
         yesno(cfg.ignore_remote_media)
@@ -169,6 +184,15 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
         ));
     } else {
         out.push_str("InhibitApps: none\n");
+    }
+
+    if !cfg.suspend_inhibit_apps.is_empty() {
+        out.push_str(&format!(
+            "SuspendInhibitApps: {}\n",
+            join_patterns(&cfg.suspend_inhibit_apps)
+        ));
+    } else {
+        out.push_str("SuspendInhibitApps: none\n");
     }
 
     if !cfg.media_blacklist.is_empty() {
@@ -313,6 +337,13 @@ fn next_step_line(cfg: &Config, state: &State, now_ms: u64) -> Option<String> {
     }
 
     let step = &cfg.plan[idx];
+    if matches!(step.kind, PlanStepKind::Suspend)
+        && let Some(started_ms) = state.suspend_hold_started_ms()
+    {
+        let seconds = now_ms.saturating_sub(started_ms) / 1000;
+        return Some(format!("Next: Suspend inhibited for {seconds}s"));
+    }
+
     let name = match &step.kind {
         PlanStepKind::Custom(s) => format!("Custom({s})"),
         other => format!("{other:?}"),

@@ -41,6 +41,7 @@ pub struct Daemon {
     config_path: PathBuf,
 
     inhibit_apps: Vec<Pattern>,
+    suspend_inhibit_apps: Vec<Pattern>,
 
     monitor_media: bool,
     ignore_remote_media: bool,
@@ -107,6 +108,7 @@ impl Daemon {
             });
 
         let inhibit_apps = effective.inhibit_apps.clone();
+        let suspend_inhibit_apps = effective.suspend_inhibit_apps.clone();
         let monitor_media = effective.monitor_media;
         let ignore_remote_media = effective.ignore_remote_media;
         let media_blacklist = effective.media_blacklist.clone();
@@ -115,7 +117,7 @@ impl Daemon {
         let enable_dbus_inhibit = effective.enable_dbus_inhibit;
 
         eventline::debug!(
-            "daemon: chassis={:?}, plan_src={:?}, active_profile={:?}, monitor_media={}, ignore_remote_media={}, media_blacklist_len={}, inhibit_apps_len={}, enable_loginctl_integration={}, enable_dbus_inhibit={}, config_path={}",
+            "daemon: chassis={:?}, plan_src={:?}, active_profile={:?}, monitor_media={}, ignore_remote_media={}, media_blacklist_len={}, inhibit_apps_len={}, suspend_inhibit_apps_len={}, enable_loginctl_integration={}, enable_dbus_inhibit={}, config_path={}",
             chassis,
             plan_src,
             cfg_file.active_profile,
@@ -123,6 +125,7 @@ impl Daemon {
             ignore_remote_media,
             media_blacklist.len(),
             inhibit_apps.len(),
+            suspend_inhibit_apps.len(),
             enable_loginctl_integration,
             enable_dbus_inhibit,
             config_path.display(),
@@ -147,6 +150,7 @@ impl Daemon {
             state,
             config_path,
             inhibit_apps,
+            suspend_inhibit_apps,
             monitor_media,
             ignore_remote_media,
             media_blacklist,
@@ -179,6 +183,7 @@ impl Daemon {
         let msg = ManagerMsg::UpdateInhibitRules {
             epoch: self.inhibit_epoch,
             inhibit_apps: effective.inhibit_apps.clone(),
+            suspend_inhibit_apps: effective.suspend_inhibit_apps.clone(),
             monitor_media: effective.monitor_media,
             ignore_remote_media: effective.ignore_remote_media,
             media_blacklist: effective.media_blacklist.clone(),

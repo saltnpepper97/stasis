@@ -40,6 +40,7 @@ pub enum ManagerMsg {
     UpdateInhibitRules {
         epoch: u64,
         inhibit_apps: Vec<Pattern>,
+        suspend_inhibit_apps: Vec<Pattern>,
         monitor_media: bool,
         ignore_remote_media: bool,
         media_blacklist: Vec<Pattern>,

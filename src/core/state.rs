@@ -30,6 +30,8 @@ pub struct State {
     // Inhibitors (counts provided by services)
     app_inhibitor_count: u64,
     media_inhibitor_count: u64,
+    suspend_app_inhibitor_count: u64,
+    suspend_media_inhibitor_count: u64,
 
     // Pause policy
     manually_paused: bool,
@@ -40,6 +42,7 @@ pub struct State {
     // Derived pause (manual OR inhibitors OR system)
     paused: bool,
     pause_started_ms: Option<u64>,
+    suspend_hold_started_ms: Option<u64>,
 
     // Mirrors config; manager copies from effective config each event.
     debounce_seconds: u64,
@@ -109,10 +112,13 @@ impl State {
         Self {
             app_inhibitor_count: 0,
             media_inhibitor_count: 0,
+            suspend_app_inhibitor_count: 0,
+            suspend_media_inhibitor_count: 0,
             manually_paused: false,
             system_paused: false,
             paused: false,
             pause_started_ms: None,
+            suspend_hold_started_ms: None,
 
             debounce_seconds: 0,
             debounce_pending: true, // boot behaves like "fresh idle cycle"
@@ -320,6 +326,14 @@ impl State {
         self.media_inhibitor_count
     }
 
+    pub fn suspend_app_inhibitor_count(&self) -> u64 {
+        self.suspend_app_inhibitor_count
+    }
+
+    pub fn suspend_media_inhibitor_count(&self) -> u64 {
+        self.suspend_media_inhibitor_count
+    }
+
     pub fn manually_paused(&self) -> bool {
         self.manually_paused
     }
@@ -352,6 +366,10 @@ impl State {
         self.app_inhibitor_count > 0 || self.media_inhibitor_count > 0
     }
 
+    pub fn suspend_inhibitors_active(&self) -> bool {
+        self.suspend_app_inhibitor_count > 0 || self.suspend_media_inhibitor_count > 0
+    }
+
     pub fn step_index(&self) -> usize {
         self.step_index
     }
@@ -380,6 +398,10 @@ impl State {
         self.pause_started_ms
     }
 
+    pub fn suspend_hold_started_ms(&self) -> Option<u64> {
+        self.suspend_hold_started_ms
+    }
+
     // ---------------- setters ----------------
 
     pub fn set_app_inhibitor_count(&mut self, count: u64) {
@@ -388,6 +410,22 @@ impl State {
 
     pub fn set_media_inhibitor_count(&mut self, count: u64) {
         self.media_inhibitor_count = count;
+    }
+
+    pub fn set_suspend_app_inhibitor_count(&mut self, count: u64) {
+        self.suspend_app_inhibitor_count = count;
+    }
+
+    pub fn set_suspend_media_inhibitor_count(&mut self, count: u64) {
+        self.suspend_media_inhibitor_count = count;
+    }
+
+    pub fn set_suspend_hold_started_ms(&mut self, value: Option<u64>) {
+        self.suspend_hold_started_ms = value;
+    }
+
+    pub fn take_suspend_hold_started_ms(&mut self) -> Option<u64> {
+        self.suspend_hold_started_ms.take()
     }
 
     pub fn set_manually_paused(&mut self, v: bool) {
@@ -524,6 +562,7 @@ impl State {
 
         // Reset pause timestamp for a fresh cycle.
         self.pause_started_ms = None;
+        self.suspend_hold_started_ms = None;
 
         // Disarm the low-power timer for a fresh cycle. Hardware restore (if
         // active) is handled by the manager emitting ExitLowPower before reset.
@@ -548,6 +587,7 @@ impl State {
 
         // Reset pause timestamp for a restarted segment.
         self.pause_started_ms = None;
+        self.suspend_hold_started_ms = None;
 
         // Disarm the low-power timer when restarting the post-lock segment.
         self.low_power_armed = false;

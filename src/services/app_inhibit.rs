@@ -16,6 +16,7 @@ use crate::core::manager_msg::ManagerMsg;
 pub struct AppRules {
     pub epoch: u64,
     pub apps: Vec<Pattern>,
+    pub suspend_apps: Vec<Pattern>,
 }
 
 /// Spawnable task: periodically polls app inhibitors and emits events on change.
@@ -31,7 +32,8 @@ pub async fn run_app_inhibit(
     let initial = rules_rx.borrow().clone();
     let mut last_epoch = initial.epoch;
 
-    let mut svc = AppInhibitService::new(&initial.apps).with_poll_interval_ms(1000);
+    let mut svc =
+        AppInhibitService::new(&initial.apps, &initial.suspend_apps).with_poll_interval_ms(1000);
 
     eventline::info!("app_inhibit: started (backend={})", svc.backend_name());
 
@@ -55,7 +57,7 @@ pub async fn run_app_inhibit(
                     svc.force_emit_next();
                 }
 
-                svc.reconfigure(&rules.apps);
+                svc.reconfigure(&rules.apps, &rules.suspend_apps);
 
                 let now_ms = crate::core::utils::now_ms();
                 if let Some(ev) = svc.poll_async(now_ms).await {
@@ -80,19 +82,21 @@ pub async fn run_app_inhibit(
 #[derive(Debug)]
 pub struct AppInhibitService {
     apps: Vec<Pattern>,
+    suspend_apps: Vec<Pattern>,
     backend: Backend,
 
     poll_interval_ms: u64,
     last_poll_ms: u64,
 
-    last_count: Option<u64>, // None => never polled yet
-    force_emit: bool,        // next poll must emit and do baseline logging
+    last_counts: Option<(u64, u64)>, // None => never polled yet
+    force_emit: bool,                // next poll must emit and do baseline logging
 
     /// Reused scratch buffer — `clear()`ed before every poll, never dropped.
     /// We `mem::take` it into `spawn_blocking` and restore it on return so we
     /// never allocate a new HashSet on the hot path. If the task panics, the
     /// field is left as an empty default and a fresh allocation occurs next poll.
     seen: HashSet<String>,
+    suspend_seen: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -116,19 +120,22 @@ struct NiriBackend {}
 struct ProcBackend {}
 
 impl AppInhibitService {
-    pub fn new(inhibit_apps: &[Pattern]) -> Self {
+    pub fn new(inhibit_apps: &[Pattern], suspend_inhibit_apps: &[Pattern]) -> Self {
         let apps = normalize_patterns(inhibit_apps);
+        let suspend_apps = normalize_patterns(suspend_inhibit_apps);
         let backend = detect_backend().unwrap_or_else(|| Backend::Proc(ProcBackend::default()));
 
         Self {
             apps,
+            suspend_apps,
             backend,
             poll_interval_ms: 1000,
             last_poll_ms: 0,
-            last_count: None,
+            last_counts: None,
             force_emit: false,
             // Start small; the shrink logic below keeps it tight at steady state.
             seen: HashSet::with_capacity(8),
+            suspend_seen: HashSet::with_capacity(8),
         }
     }
 
@@ -137,19 +144,24 @@ impl AppInhibitService {
         self
     }
 
-    pub fn reconfigure(&mut self, inhibit_apps: &[Pattern]) {
+    pub fn reconfigure(&mut self, inhibit_apps: &[Pattern], suspend_inhibit_apps: &[Pattern]) {
         let new_apps = normalize_patterns(inhibit_apps);
+        let new_suspend_apps = normalize_patterns(suspend_inhibit_apps);
 
-        if patterns_same(&self.apps, &new_apps) {
+        if patterns_same(&self.apps, &new_apps)
+            && patterns_same(&self.suspend_apps, &new_suspend_apps)
+        {
             return;
         }
 
         self.apps = new_apps;
+        self.suspend_apps = new_suspend_apps;
         self.force_emit_next();
 
         eventline::info!(
-            "app_inhibit: reconfigured (apps_len={}, backend={})",
+            "app_inhibit: reconfigured (apps_len={}, suspend_apps_len={}, backend={})",
             self.apps.len(),
+            self.suspend_apps.len(),
             self.backend_name(),
         );
     }
@@ -171,131 +183,162 @@ impl AppInhibitService {
         }
         self.last_poll_ms = now_ms;
 
-        let prev_count = self.last_count.unwrap_or(0);
+        let previous = self.last_counts.unwrap_or((0, 0));
 
-        let count = if self.apps.is_empty() {
+        let counts = if self.apps.is_empty() && self.suspend_apps.is_empty() {
             // Nothing to match — rinse the buffer so stale entries can't linger.
             self.seen.clear();
-            0
+            self.suspend_seen.clear();
+            (0, 0)
         } else {
-            // Take the scratch buffer out so we can move it into spawn_blocking.
-            // self.seen is left as HashSet::default() (empty, no allocation).
+            // Take both scratch buffers out so one backend query can classify
+            // every observed app against both rule sets.
             let mut scratch = mem::take(&mut self.seen);
+            let mut suspend_scratch = mem::take(&mut self.suspend_seen);
             scratch.clear();
+            suspend_scratch.clear();
 
             match &self.backend {
                 Backend::Halley(_) => {
                     let apps = self.apps.clone();
+                    let suspend_apps = self.suspend_apps.clone();
                     match tokio::task::spawn_blocking(move || {
-                        HalleyBackend::count_into(&apps, &mut scratch)?;
-                        Ok::<_, String>((scratch.len() as u64, scratch))
+                        HalleyBackend::count_into(
+                            &apps,
+                            &suspend_apps,
+                            &mut scratch,
+                            &mut suspend_scratch,
+                        )?;
+                        Ok::<_, String>((scratch, suspend_scratch))
                     })
                     .await
                     {
-                        Ok(Ok((n, returned))) => {
+                        Ok(Ok((returned, returned_suspend))) => {
                             self.seen = returned;
-                            n
+                            self.suspend_seen = returned_suspend;
+                            (self.seen.len() as u64, self.suspend_seen.len() as u64)
                         }
                         Ok(Err(e)) => {
                             eventline::warn!(
-                                "app_inhibit: halley query failed (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: halley query failed (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                         Err(e) => {
                             eventline::warn!(
-                                "app_inhibit: halley task panicked (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: halley task panicked (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                     }
                 }
 
                 Backend::Hyprland(_) => {
                     let apps = self.apps.clone();
+                    let suspend_apps = self.suspend_apps.clone();
                     match tokio::task::spawn_blocking(move || {
-                        HyprlandBackend::count_into(&apps, &mut scratch)?;
-                        Ok::<_, String>((scratch.len() as u64, scratch))
+                        HyprlandBackend::count_into(
+                            &apps,
+                            &suspend_apps,
+                            &mut scratch,
+                            &mut suspend_scratch,
+                        )?;
+                        Ok::<_, String>((scratch, suspend_scratch))
                     })
                     .await
                     {
-                        Ok(Ok((n, returned))) => {
+                        Ok(Ok((returned, returned_suspend))) => {
                             self.seen = returned;
-                            n
+                            self.suspend_seen = returned_suspend;
+                            (self.seen.len() as u64, self.suspend_seen.len() as u64)
                         }
                         Ok(Err(e)) => {
                             eventline::warn!(
-                                "app_inhibit: hyprland query failed (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: hyprland query failed (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                         Err(e) => {
                             eventline::warn!(
-                                "app_inhibit: hyprland task panicked (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: hyprland task panicked (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                     }
                 }
 
                 Backend::Niri(_) => {
                     let apps = self.apps.clone();
+                    let suspend_apps = self.suspend_apps.clone();
                     match tokio::task::spawn_blocking(move || {
-                        NiriBackend::count_into(&apps, &mut scratch)?;
-                        Ok::<_, String>((scratch.len() as u64, scratch))
+                        NiriBackend::count_into(
+                            &apps,
+                            &suspend_apps,
+                            &mut scratch,
+                            &mut suspend_scratch,
+                        )?;
+                        Ok::<_, String>((scratch, suspend_scratch))
                     })
                     .await
                     {
-                        Ok(Ok((n, returned))) => {
+                        Ok(Ok((returned, returned_suspend))) => {
                             self.seen = returned;
-                            n
+                            self.suspend_seen = returned_suspend;
+                            (self.seen.len() as u64, self.suspend_seen.len() as u64)
                         }
                         Ok(Err(e)) => {
                             eventline::warn!(
-                                "app_inhibit: niri query failed (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: niri query failed (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                         Err(e) => {
                             eventline::warn!(
-                                "app_inhibit: niri task panicked (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: niri task panicked (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                     }
                 }
 
                 Backend::Proc(_) => {
                     let apps = self.apps.clone();
+                    let suspend_apps = self.suspend_apps.clone();
                     match tokio::task::spawn_blocking(move || {
-                        ProcBackend::count_into(&apps, &mut scratch);
-                        (scratch.len() as u64, scratch)
+                        ProcBackend::count_into(
+                            &apps,
+                            &suspend_apps,
+                            &mut scratch,
+                            &mut suspend_scratch,
+                        );
+                        (scratch, suspend_scratch)
                     })
                     .await
                     {
-                        Ok((n, returned)) => {
+                        Ok((returned, returned_suspend)) => {
                             self.seen = returned;
-                            n
+                            self.suspend_seen = returned_suspend;
+                            (self.seen.len() as u64, self.suspend_seen.len() as u64)
                         }
                         Err(e) => {
                             eventline::warn!(
-                                "app_inhibit: proc task panicked (keeping previous count={}): {}",
-                                prev_count,
+                                "app_inhibit: proc task panicked (keeping previous counts={:?}): {}",
+                                previous,
                                 e
                             );
-                            prev_count
+                            previous
                         }
                     }
                 }
@@ -308,33 +351,41 @@ impl AppInhibitService {
         if self.seen.capacity() > 32 && self.seen.len() < 8 {
             self.seen.shrink_to(8);
         }
+        if self.suspend_seen.capacity() > 32 && self.suspend_seen.len() < 8 {
+            self.suspend_seen.shrink_to(8);
+        }
 
-        let first_poll = self.last_count.is_none();
-        let prev = self.last_count.unwrap_or(0);
-        let changed = !first_poll && prev != count;
+        let first_poll = self.last_counts.is_none();
+        let changed = !first_poll && previous != counts;
 
         if changed {
             eventline::info!(
-                "app_inhibit: count {} -> {} (backend={}, apps_len={})",
-                prev,
-                count,
+                "app_inhibit: counts {:?} -> {:?} (backend={}, apps_len={}, suspend_apps_len={})",
+                previous,
+                counts,
                 self.backend_name(),
-                self.apps.len()
+                self.apps.len(),
+                self.suspend_apps.len()
             );
-        } else if (first_poll || self.force_emit) && count != 0 {
+        } else if (first_poll || self.force_emit) && counts != (0, 0) {
             eventline::info!(
-                "app_inhibit: count {} -> {} (backend={}, apps_len={})",
-                0u64,
-                count,
+                "app_inhibit: counts {:?} -> {:?} (backend={}, apps_len={}, suspend_apps_len={})",
+                (0u64, 0u64),
+                counts,
                 self.backend_name(),
-                self.apps.len()
+                self.apps.len(),
+                self.suspend_apps.len()
             );
         }
 
         if first_poll || changed || self.force_emit {
-            self.last_count = Some(count);
+            self.last_counts = Some(counts);
             self.force_emit = false;
-            return Some(Event::AppInhibitorCount { count, now_ms });
+            return Some(Event::AppInhibitorCount {
+                count: counts.0,
+                suspend_count: counts.1,
+                now_ms,
+            });
         }
 
         None
@@ -427,6 +478,21 @@ fn should_inhibit_app_id(app_id: &str, patterns: &[Pattern]) -> bool {
     false
 }
 
+fn record_app_id(
+    app_id: &str,
+    apps: &[Pattern],
+    suspend_apps: &[Pattern],
+    seen: &mut HashSet<String>,
+    suspend_seen: &mut HashSet<String>,
+) {
+    if should_inhibit_app_id(app_id, apps) {
+        seen.insert(app_id.to_string());
+    }
+    if should_inhibit_app_id(app_id, suspend_apps) {
+        suspend_seen.insert(app_id.to_string());
+    }
+}
+
 fn app_id_matches_literal(pattern: &str, app_id: &str) -> bool {
     // Exact case-insensitive match.
     if pattern.eq_ignore_ascii_case(app_id) {
@@ -452,7 +518,12 @@ fn app_id_matches_literal(pattern: &str, app_id: &str) -> bool {
 
 impl HalleyBackend {
     /// Populates `seen` with matched Halley window app IDs. Caller must `clear()` first.
-    fn count_into(apps: &[Pattern], seen: &mut HashSet<String>) -> Result<(), String> {
+    fn count_into(
+        apps: &[Pattern],
+        suspend_apps: &[Pattern],
+        seen: &mut HashSet<String>,
+        suspend_seen: &mut HashSet<String>,
+    ) -> Result<(), String> {
         let out = std::process::Command::new("halleyctl")
             .args(["node", "list", "--json"])
             .output()
@@ -463,12 +534,14 @@ impl HalleyBackend {
             return Err(format!("halleyctl node list --json failed: {}", err.trim()));
         }
 
-        Self::count_json_into(apps, seen, &out.stdout)
+        Self::count_json_into(apps, suspend_apps, seen, suspend_seen, &out.stdout)
     }
 
     fn count_json_into(
         apps: &[Pattern],
+        suspend_apps: &[Pattern],
         seen: &mut HashSet<String>,
+        suspend_seen: &mut HashSet<String>,
         json: &[u8],
     ) -> Result<(), String> {
         let v: serde_json::Value = serde_json::from_slice(json)
@@ -490,9 +563,7 @@ impl HalleyBackend {
                     continue;
                 }
 
-                if should_inhibit_app_id(app_id, apps) {
-                    seen.insert(app_id.to_string());
-                }
+                record_app_id(app_id, apps, suspend_apps, seen, suspend_seen);
             }
         }
 
@@ -504,7 +575,12 @@ impl HalleyBackend {
 
 impl HyprlandBackend {
     /// Populates `seen` with matched window classes. Caller must `clear()` first.
-    fn count_into(apps: &[Pattern], seen: &mut HashSet<String>) -> Result<(), String> {
+    fn count_into(
+        apps: &[Pattern],
+        suspend_apps: &[Pattern],
+        seen: &mut HashSet<String>,
+        suspend_seen: &mut HashSet<String>,
+    ) -> Result<(), String> {
         let out = std::process::Command::new("hyprctl")
             .args(["clients", "-j"])
             .output()
@@ -527,9 +603,7 @@ impl HyprlandBackend {
             if class.is_empty() {
                 continue;
             }
-            if should_inhibit_app_id(class, apps) {
-                seen.insert(class.to_string());
-            }
+            record_app_id(class, apps, suspend_apps, seen, suspend_seen);
         }
 
         Ok(())
@@ -540,7 +614,12 @@ impl HyprlandBackend {
 
 impl NiriBackend {
     /// Populates `seen` with matched app IDs. Caller must `clear()` first.
-    fn count_into(apps: &[Pattern], seen: &mut HashSet<String>) -> Result<(), String> {
+    fn count_into(
+        apps: &[Pattern],
+        suspend_apps: &[Pattern],
+        seen: &mut HashSet<String>,
+        suspend_seen: &mut HashSet<String>,
+    ) -> Result<(), String> {
         let out = std::process::Command::new("niri")
             .args(["msg", "windows"])
             .output()
@@ -563,9 +642,7 @@ impl NiriBackend {
                 continue;
             }
 
-            if should_inhibit_app_id(app_id, apps) {
-                seen.insert(app_id.to_string());
-            }
+            record_app_id(app_id, apps, suspend_apps, seen, suspend_seen);
         }
 
         Ok(())
@@ -585,12 +662,30 @@ impl ProcBackend {
     /// Early-exit: once every literal pattern has a hit in `seen` *and* there
     /// are no regex patterns left to satisfy, further scanning cannot change the
     /// count so we break out of the loop immediately.
-    fn count_into(apps: &[Pattern], seen: &mut HashSet<String>) {
-        let has_regex = apps.iter().any(|p| matches!(p, Pattern::Regex(_)));
+    fn count_into(
+        apps: &[Pattern],
+        suspend_apps: &[Pattern],
+        seen: &mut HashSet<String>,
+        suspend_seen: &mut HashSet<String>,
+    ) {
+        let has_regex = apps
+            .iter()
+            .chain(suspend_apps)
+            .any(|p| matches!(p, Pattern::Regex(_)));
 
         // Pre-compute the exact keys that literal patterns produce so we can
         // check saturation in O(n_literals) rather than O(n_seen).
         let literal_keys: Vec<String> = apps
+            .iter()
+            .filter_map(|p| {
+                if let Pattern::Literal(s) = p {
+                    Some(s.to_lowercase())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let suspend_literal_keys: Vec<String> = suspend_apps
             .iter()
             .filter_map(|p| {
                 if let Pattern::Literal(s) = p {
@@ -612,30 +707,47 @@ impl ProcBackend {
         for prc in all_processes.flatten() {
             // Early-exit when all literal patterns are satisfied and there are no
             // regex patterns that could add new unique keys.
-            if !has_regex && literal_keys.iter().all(|k| seen.contains(k.as_str())) {
+            if !has_regex
+                && literal_keys.iter().all(|k| seen.contains(k.as_str()))
+                && suspend_literal_keys
+                    .iter()
+                    .all(|k| suspend_seen.contains(k.as_str()))
+            {
                 break;
             }
 
             // Primary: `comm` — kernel-truncated to 15 chars but fast and
             // sufficient for most app names.
-            let comm_matched = prc
+            let (comm_matched, suspend_comm_matched) = prc
                 .stat()
                 .ok()
-                .and_then(|s| Self::match_key(&s.comm, apps))
-                .map(|key| seen.insert(key))
-                .is_some();
+                .map(|stat| {
+                    let matched = Self::match_key(&stat.comm, apps)
+                        .map(|key| seen.insert(key))
+                        .is_some();
+                    let suspend_matched = Self::match_key(&stat.comm, suspend_apps)
+                        .map(|key| suspend_seen.insert(key))
+                        .is_some();
+                    (matched, suspend_matched)
+                })
+                .unwrap_or((false, false));
 
-            if comm_matched {
+            let need_exe = (!apps.is_empty() && !comm_matched)
+                || (!suspend_apps.is_empty() && !suspend_comm_matched);
+            if !need_exe {
                 continue;
             }
 
             // Fallback: exe basename — handles wrappers that rename comm or
             // apps whose name is longer than 15 characters.
-            if let Ok(exe) = prc.exe() {
-                if let Some(name) = exe.file_name().and_then(|n| n.to_str()) {
-                    if let Some(key) = Self::match_key(name, apps) {
-                        seen.insert(key);
-                    }
+            if let Ok(exe) = prc.exe()
+                && let Some(name) = exe.file_name().and_then(|n| n.to_str())
+            {
+                if !comm_matched && let Some(key) = Self::match_key(name, apps) {
+                    seen.insert(key);
+                }
+                if !suspend_comm_matched && let Some(key) = Self::match_key(name, suspend_apps) {
+                    suspend_seen.insert(key);
                 }
             }
         }
@@ -684,10 +796,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn halley_json_counts_unique_matching_app_ids() {
+    fn halley_json_classifies_both_rule_sets_in_one_scan() {
         let apps = vec![
             Pattern::Literal("firefox".to_string()),
             Pattern::Regex(regex::Regex::new(r"steam_app_.*").unwrap()),
+        ];
+        let suspend_apps = vec![
+            Pattern::Literal("firefox".to_string()),
+            Pattern::Literal("kitty".to_string()),
         ];
         let json = br#"
         {
@@ -712,18 +828,30 @@ mod tests {
         "#;
 
         let mut seen = HashSet::new();
-        HalleyBackend::count_json_into(&apps, &mut seen, json).unwrap();
+        let mut suspend_seen = HashSet::new();
+        HalleyBackend::count_json_into(&apps, &suspend_apps, &mut seen, &mut suspend_seen, json)
+            .unwrap();
 
         assert_eq!(seen.len(), 2);
         assert!(seen.contains("firefox"));
         assert!(seen.contains("steam_app_123"));
+        assert_eq!(suspend_seen.len(), 2);
+        assert!(suspend_seen.contains("firefox"));
+        assert!(suspend_seen.contains("kitty"));
     }
 
     #[test]
     fn halley_json_rejects_missing_outputs_array() {
         let mut seen = HashSet::new();
-        let err = HalleyBackend::count_json_into(&[], &mut seen, br#"{"nodes": []}"#)
-            .expect_err("missing outputs should be invalid");
+        let mut suspend_seen = HashSet::new();
+        let err = HalleyBackend::count_json_into(
+            &[],
+            &[],
+            &mut seen,
+            &mut suspend_seen,
+            br#"{"nodes": []}"#,
+        )
+        .expect_err("missing outputs should be invalid");
 
         assert!(err.contains("expected outputs array"));
     }
