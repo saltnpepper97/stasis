@@ -506,7 +506,7 @@ fn compositor_idled_without_resumed_fires_resume_and_restarts_window() {
 }
 
 #[test]
-fn browser_inhibit_stays_active_until_explicit_inactive_edge() {
+fn browser_inactive_uses_a_current_verified_idle_state() {
     let plan = vec![step(PlanStepKind::Dpms, 1, "dpms")];
 
     let mut mgr = Manager::new(cfg_with_plan(plan));
@@ -518,7 +518,14 @@ fn browser_inhibit_stays_active_until_explicit_inactive_edge() {
         .unwrap();
     assert!(actions.is_empty());
 
-    // While browser inhibit is active, long ticks must not advance/fires steps.
+    // A genuine compositor idle edge is retained while browser policy masks it.
+    let actions = mgr
+        .handle_event(&mut state, Event::CompositorIdled { now_ms: 1_000 })
+        .unwrap();
+    assert!(actions.is_empty());
+    assert!(state.compositor_idle());
+
+    // While browser inhibit is active, long ticks must not advance or fire steps.
     let actions = mgr
         .handle_event(&mut state, Event::Tick { now_ms: 60_000 })
         .unwrap();
@@ -544,6 +551,105 @@ fn browser_inhibit_stays_active_until_explicit_inactive_edge() {
             command: "dpms".to_string()
         }]
     );
+}
+
+#[test]
+fn browser_inactive_cannot_start_timing_after_compositor_resumed() {
+    let plan = vec![step(PlanStepKind::Dpms, 1, "dpms")];
+
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    state.set_plan_source(PlanSource::Desktop);
+
+    mgr.handle_event(&mut state, Event::BrowserActivity { now_ms: 0 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::CompositorIdled { now_ms: 1_000 })
+        .unwrap();
+
+    // An inhibitor-aware Resumed edge invalidates the earlier idle observation.
+    mgr.handle_event(&mut state, Event::CompositorResumed { now_ms: 2_000 })
+        .unwrap();
+    assert!(!state.compositor_idle());
+
+    mgr.handle_event(&mut state, Event::BrowserInactive { now_ms: 60_000 })
+        .unwrap();
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 120_000 })
+        .unwrap();
+    assert!(actions.is_empty());
+    assert!(state.debounce_pending());
+
+    // Only a later real idle edge can arm the plan.
+    mgr.handle_event(&mut state, Event::CompositorIdled { now_ms: 120_000 })
+        .unwrap();
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 121_000 })
+        .unwrap();
+    assert_eq!(
+        actions,
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+}
+
+#[test]
+fn lid_open_waits_for_a_fresh_compositor_idle_edge() {
+    let plan = vec![step(PlanStepKind::Dpms, 1, "dpms")];
+
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    state.set_plan_source(PlanSource::Desktop);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 100 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::LidOpened { now_ms: 200 })
+        .unwrap();
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+        .unwrap();
+    assert!(actions.is_empty());
+    assert!(state.debounce_pending());
+    assert!(!state.compositor_idle());
+
+    mgr.handle_event(&mut state, Event::CompositorIdled { now_ms: 60_000 })
+        .unwrap();
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 61_000 })
+        .unwrap();
+    assert_eq!(actions.len(), 1);
+}
+
+#[test]
+fn sleep_resume_waits_for_a_fresh_compositor_idle_edge() {
+    let plan = vec![step(PlanStepKind::Dpms, 1, "dpms")];
+
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    state.set_plan_source(PlanSource::Desktop);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(&mut state, Event::PrepareForSleep { now_ms: 100 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::ResumedFromSleep { now_ms: 200 })
+        .unwrap();
+
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+        .unwrap();
+    assert!(actions.is_empty());
+    assert!(state.debounce_pending());
+    assert!(!state.compositor_idle());
+
+    mgr.handle_event(&mut state, Event::CompositorIdled { now_ms: 60_000 })
+        .unwrap();
+    let actions = mgr
+        .handle_event(&mut state, Event::Tick { now_ms: 61_000 })
+        .unwrap();
+    assert_eq!(actions.len(), 1);
 }
 
 #[test]

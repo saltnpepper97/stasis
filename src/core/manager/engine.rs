@@ -75,13 +75,10 @@ impl Manager {
             Event::BrowserInactive { .. } => {
                 state.clear_browser_activity();
 
-                // If browser activity was authoritative and caused us to skip
-                // compositor-idled edges, transition into idle timing now.
-                if state.debounce_pending() && !state.paused() {
-                    state.set_debounce_pending(false);
-                    state.set_step_base_ms(now_ms);
-                    state.set_pre_action_notify_sent(false);
-                    state.set_pre_action_notify_ms(0);
+                // Browser activity may have masked a real compositor-idled edge.
+                // Resume promptly only when that verified idle state is still current.
+                if state.compositor_idle() && state.debounce_pending() && !state.paused() {
+                    Self::begin_idle_timing(state, now_ms);
                 }
             }
 
@@ -258,9 +255,6 @@ impl Manager {
                 state.set_system_paused(false);
 
                 self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
-
-                state.set_pre_action_notify_sent(false);
-                state.set_debounce_pending(false);
             }
 
             Event::LidClosed { .. } => {
@@ -290,9 +284,6 @@ impl Manager {
                 }
 
                 self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
-
-                state.set_pre_action_notify_sent(false);
-                state.set_debounce_pending(false);
             }
 
             Event::ProfileChanged { name, .. } => {
@@ -402,6 +393,10 @@ impl Manager {
             }
 
             Event::CompositorIdled { .. } => {
+                // Record the real inhibitor-aware compositor state even while
+                // another Stasis policy temporarily prevents plan timing.
+                state.set_compositor_idle(true);
+
                 // If browser reports active playback/usage, extension state wins.
                 if state.browser_activity_active(now_ms) {
                     return Ok(out);
@@ -415,21 +410,24 @@ impl Manager {
                     // the new idle window.
                     if !state.debounce_pending() {
                         self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
+                        // The current event is still authoritative after the
+                        // implicit activity reset above.
+                        state.set_compositor_idle(true);
                     }
 
-                    // We have entered true idle per compositor.
-                    // Start timing from *idle start*, not from last activity.
-                    state.set_debounce_pending(false);
-                    state.set_step_base_ms(now_ms);
-
-                    // Restart notify scheduling relative to this idle episode.
-                    state.set_pre_action_notify_sent(false);
-                    state.set_pre_action_notify_ms(0);
+                    Self::begin_idle_timing(state, now_ms);
                 }
             }
         }
 
         Ok(out)
+    }
+
+    fn begin_idle_timing(state: &mut State, now_ms: u64) {
+        state.set_debounce_pending(false);
+        state.set_step_base_ms(now_ms);
+        state.set_pre_action_notify_sent(false);
+        state.set_pre_action_notify_ms(0);
     }
 
     fn handle_activity_like_event(

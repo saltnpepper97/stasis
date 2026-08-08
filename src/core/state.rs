@@ -48,6 +48,10 @@ pub struct State {
     // True means: apply debounce ONCE before the next non-instant step fires.
     debounce_pending: bool,
 
+    // Latest inhibitor-aware compositor idle state. This is cleared by any
+    // activity-like transition so stale idle observations cannot start a plan.
+    compositor_idle: bool,
+
     // Session / profile
     is_locked: bool,
     // A positive login1 LockedHint promotes the current lock episode away
@@ -112,6 +116,7 @@ impl State {
 
             debounce_seconds: 0,
             debounce_pending: true, // boot behaves like "fresh idle cycle"
+            compositor_idle: false,
 
             is_locked: false,
             system_lock_confirmed: false,
@@ -367,6 +372,10 @@ impl State {
         self.debounce_pending
     }
 
+    pub fn compositor_idle(&self) -> bool {
+        self.compositor_idle
+    }
+
     pub fn pause_started_ms(&self) -> Option<u64> {
         self.pause_started_ms
     }
@@ -460,6 +469,10 @@ impl State {
         self.debounce_pending = v;
     }
 
+    pub fn set_compositor_idle(&mut self, v: bool) {
+        self.compositor_idle = v;
+    }
+
     // ---------------- low-power mode ----------------
 
     pub fn low_power_armed(&self) -> bool {
@@ -505,6 +518,7 @@ impl State {
         self.pre_action_notify_ms = 0;
 
         self.debounce_pending = true;
+        self.compositor_idle = false;
 
         self.clear_fired_steps();
 
@@ -528,6 +542,7 @@ impl State {
         self.pre_action_notify_ms = 0;
 
         self.debounce_pending = true;
+        self.compositor_idle = false;
 
         self.clear_fired_steps_from(post_lock_start_idx);
 
