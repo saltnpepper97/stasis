@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 
 type AnyError = Box<dyn std::error::Error + Send + Sync>;
 
+const TRAY_BUS_NAME: &str = "io.github.saltnpepper97.Stasis.Tray";
+
 static TRAY_ICON: LazyLock<ksni::Icon> = LazyLock::new(|| {
     let img = image::load_from_memory_with_format(
         include_bytes!("../../assets/stasis-tray.png"),
@@ -175,6 +177,11 @@ impl Tray for StasisTray {
 }
 
 pub async fn run() -> Result<(), AnyError> {
+    let Some(_instance) = claim_single_instance().await? else {
+        eprintln!("stasis tray: another instance is already running");
+        return Ok(());
+    };
+
     let (commands_tx, mut commands_rx) = mpsc::unbounded_channel();
     let tray = StasisTray {
         snapshot: fetch_snapshot().await,
@@ -209,6 +216,18 @@ pub async fn run() -> Result<(), AnyError> {
     }
 
     Ok(())
+}
+
+async fn claim_single_instance() -> Result<Option<zbus::Connection>, zbus::Error> {
+    let builder = zbus::connection::Builder::session()?
+        .name(TRAY_BUS_NAME)?
+        .allow_name_replacements(false)
+        .replace_existing_names(false);
+    match builder.build().await {
+        Ok(connection) => Ok(Some(connection)),
+        Err(zbus::Error::NameTaken) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 async fn update_snapshot(handle: &ksni::Handle<StasisTray>) {
