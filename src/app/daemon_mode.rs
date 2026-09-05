@@ -123,12 +123,13 @@ pub async fn run(args: Args) -> Result<(), AnyError> {
 
     if config_path.exists() {
         match crate::config::migrate::migrate_in_place(&config_path) {
-            Ok(crate::config::migrate::MigrateOutcome::Replaced {
+            Ok(crate::config::migrate::MigrateOutcome::Migrated {
                 backup_path,
-                reason,
+                changes,
             }) => {
                 eventline::info!(
-                    "replaced outdated config ({reason}); backup at {}",
+                    "migrated config in place ({}); backup at {}",
+                    changes.join(", "),
                     backup_path.display()
                 );
             }

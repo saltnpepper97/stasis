@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Closed desktop-portal inhibit requests are now removed immediately instead of remaining latched while unrelated browser source capture is active.
 - The tray presents manual pause once as `Stasis paused` instead of repeating the `manual` state.
+- Configuration upgrades now preserve customized files and symlinks, rename only known legacy keys, and backfill compatibility fields instead of replacing the entire file with the current bootstrap ([#99](https://github.com/saltnpepper97/stasis/issues/99)).
 
 ## [1.5.1] - 2026-08-15
 
