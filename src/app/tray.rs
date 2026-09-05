@@ -65,7 +65,12 @@ impl TraySnapshot {
     fn tooltip_description(&self) -> String {
         self.tooltip
             .lines()
-            .filter(|line| !line.trim_start().starts_with("State:"))
+            .filter(|line| {
+                let line = line.trim_start();
+                !line.starts_with("State:")
+                    && !line.starts_with("Manual Pause:")
+                    && !line.starts_with("Paused:")
+            })
             .collect::<Vec<_>>()
             .join("\n")
             .trim()
@@ -95,8 +100,9 @@ mod tests {
     fn tooltip_does_not_repeat_state_from_title() {
         let description = manual_snapshot().tooltip_description();
         assert!(!description.contains("State:"));
+        assert!(!description.contains("Manual Pause:"));
+        assert!(!description.contains("Paused:"));
         assert_eq!(description.matches("Profile: default").count(), 1);
-        assert!(description.contains("Paused: yes"));
     }
 }
 
@@ -129,8 +135,9 @@ impl Tray for StasisTray {
     }
 
     fn title(&self) -> String {
-        // The first menu row below is the single state presentation.
-        "Stasis".to_string()
+        // Shells such as Dank Material Shell render this as the menu header.
+        // Keep the state here, and do not repeat it as a menu item below.
+        self.snapshot.state_title()
     }
 
     fn status(&self) -> ksni::Status {
@@ -159,13 +166,6 @@ impl Tray for StasisTray {
         let daemon_running = self.snapshot.alt != "not_running";
 
         vec![
-            StandardItem {
-                label: self.snapshot.state_title(),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
             StandardItem {
                 label: "Toggle Inhibit".to_string(),
                 enabled: daemon_running,
