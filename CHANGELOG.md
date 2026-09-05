@@ -5,6 +5,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-05
+
+### Fixed
+
+- The manually paused tray title now says exactly `Stasis paused (manually)`.
+
 ## [1.6.0] - 2026-09-05
 
 ### Added

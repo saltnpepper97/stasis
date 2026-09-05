@@ -56,7 +56,7 @@ impl TraySnapshot {
 
     fn state_title(&self) -> String {
         if self.alt == "manually_inhibited" {
-            "Stasis paused".to_string()
+            "Stasis paused (manually)".to_string()
         } else {
             format!("Stasis: {}", self.text)
         }
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn manual_pause_has_requested_title() {
-        assert_eq!(manual_snapshot().state_title(), "Stasis paused");
+        assert_eq!(manual_snapshot().state_title(), "Stasis paused (manually)");
     }
 
     #[test]
