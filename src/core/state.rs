@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::core::blame::DbusHold;
+use crate::core::blame::{DbusHold, Login1IdleHold};
 use crate::core::config::{PlanSource, PlanStep, PlanStepKind};
 use crate::core::events::PowerState;
 
@@ -38,6 +38,7 @@ pub struct State {
     suspend_app_inhibitor_sources: Vec<String>,
     suspend_media_inhibitor_sources: Vec<String>,
     dbus_holds: Vec<DbusHold>,
+    login1_idle_holds: Vec<Login1IdleHold>,
     browser_source_capture_active: bool,
 
     // Pause policy
@@ -126,6 +127,7 @@ impl State {
             suspend_app_inhibitor_sources: Vec::new(),
             suspend_media_inhibitor_sources: Vec::new(),
             dbus_holds: Vec::new(),
+            login1_idle_holds: Vec::new(),
             browser_source_capture_active: false,
             manually_paused: false,
             system_paused: false,
@@ -367,6 +369,10 @@ impl State {
         &self.dbus_holds
     }
 
+    pub fn login1_idle_holds(&self) -> &[Login1IdleHold] {
+        &self.login1_idle_holds
+    }
+
     pub fn browser_source_capture_active(&self) -> bool {
         self.browser_source_capture_active
     }
@@ -404,7 +410,9 @@ impl State {
     }
 
     pub fn suspend_inhibitors_active(&self) -> bool {
-        self.suspend_app_inhibitor_count > 0 || self.suspend_media_inhibitor_count > 0
+        self.suspend_app_inhibitor_count > 0
+            || self.suspend_media_inhibitor_count > 0
+            || !self.login1_idle_holds.is_empty()
     }
 
     pub fn step_index(&self) -> usize {
@@ -475,6 +483,10 @@ impl State {
 
     pub fn set_dbus_holds(&mut self, holds: Vec<DbusHold>) {
         self.dbus_holds = holds;
+    }
+
+    pub fn set_login1_idle_holds(&mut self, holds: Vec<Login1IdleHold>) {
+        self.login1_idle_holds = holds;
     }
 
     pub fn set_browser_source_capture_active(&mut self, active: bool) {

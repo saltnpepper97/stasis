@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `stasis blame` reports the current manual, system, application, media, suspend-only, and D-Bus blockers, with a stable `--json` form for tooling.
+- Blocking login1 `idle` inhibitors are now discovered directly from systemd-logind and treated as suspend-only holds, so lock and DPMS can still run while tools such as Codex prevent automatic sleep ([#98](https://github.com/saltnpepper97/stasis/issues/98)).
 
 ### Fixed
 

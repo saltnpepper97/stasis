@@ -1,7 +1,7 @@
 // Author: Dustin Pilgrim
 // License: GPL-3.0-only
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::process::Command;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, watch};
 use zbus::{Connection, MatchRule, Proxy};
 
 use crate::core::{
-    blame::DbusHold,
+    blame::{DbusHold, Login1IdleHold},
     events::{Event, LockSource},
 };
 
@@ -31,10 +31,14 @@ pub trait EventSink: Send + Sync + 'static {
 /// they are not used for lock tracking. LockedHint state is monitored
 /// independently and automatically.
 ///
-/// `enable_dbus_inhibit` gates session-bus inhibit monitoring:
+/// `enable_dbus_inhibit` gates inhibit monitoring:
 /// - org.freedesktop.ScreenSaver Inhibit/UnInhibit
 /// - org.gnome.SessionManager Inhibit/Uninhibit
 /// - org.freedesktop.portal.Inhibit Inhibit + Request.Close
+///
+/// It also gates system-bus login1 blocking `idle` inhibitors. Those holds
+/// block only Stasis's automatic suspend step; earlier lock and DPMS actions
+/// continue to follow the configured plan.
 ///
 /// Lid events via UPower are always monitored when system bus is available.
 ///
@@ -108,6 +112,76 @@ struct PendingHold {
     reason: Option<String>,
     flags: Option<u32>,
     started_at_ms: u64,
+}
+
+type Login1InhibitorRow = (String, String, String, String, u32, u32);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Login1InhibitorKey {
+    what: String,
+    who: String,
+    why: String,
+    mode: String,
+    uid: u32,
+    pid: u32,
+}
+
+#[derive(Debug, Default)]
+struct Login1IdleTracker {
+    first_seen_ms: HashMap<Login1InhibitorKey, u64>,
+}
+
+impl Login1IdleTracker {
+    fn reconcile(&mut self, rows: Vec<Login1InhibitorRow>, now_ms: u64) -> Vec<Login1IdleHold> {
+        let mut active = rows
+            .into_iter()
+            .filter_map(|(what, who, why, mode, uid, pid)| {
+                let blocks_idle = what.split(':').any(|scope| scope == "idle");
+                if !blocks_idle || !mode.eq_ignore_ascii_case("block") {
+                    return None;
+                }
+                Some(Login1InhibitorKey {
+                    what,
+                    who,
+                    why,
+                    mode,
+                    uid,
+                    pid,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        active.sort_by(|a, b| {
+            a.who
+                .cmp(&b.who)
+                .then_with(|| a.pid.cmp(&b.pid))
+                .then_with(|| a.why.cmp(&b.why))
+                .then_with(|| a.what.cmp(&b.what))
+                .then_with(|| a.mode.cmp(&b.mode))
+                .then_with(|| a.uid.cmp(&b.uid))
+        });
+        let active_set = active.iter().cloned().collect::<HashSet<_>>();
+        self.first_seen_ms.retain(|key, _| active_set.contains(key));
+
+        active
+            .into_iter()
+            .map(|key| {
+                let started_at_ms = *self.first_seen_ms.entry(key.clone()).or_insert(now_ms);
+                Login1IdleHold {
+                    status: "live".to_string(),
+                    what: key.what,
+                    who: key.who,
+                    why: key.why,
+                    mode: key.mode,
+                    uid: key.uid,
+                    pid: key.pid,
+                    process: process_name_for_pid(key.pid),
+                    started_at_ms,
+                    age_ms: 0,
+                }
+            })
+            .collect()
+    }
 }
 
 impl PendingHold {
@@ -720,6 +794,67 @@ fn spawn_source_capture_monitor(tracker: Arc<Mutex<DbusInhibitTracker>>, sink: A
     });
 }
 
+async fn list_login1_inhibitors(proxy: &Proxy<'_>) -> zbus::Result<Vec<Login1InhibitorRow>> {
+    let reply = proxy.call_method("ListInhibitors", &()).await?;
+    reply.body().deserialize()
+}
+
+fn spawn_login1_idle_inhibit_monitor(connection: Connection, sink: Arc<dyn EventSink>) {
+    tokio::spawn(async move {
+        let proxy = match Proxy::new(
+            &connection,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+        )
+        .await
+        {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                eventline::warn!("D-Bus: login1 idle inhibit monitor unavailable: {error:?}");
+                return;
+            }
+        };
+
+        let mut tracker = Login1IdleTracker::default();
+        let mut published = Vec::new();
+        let mut unavailable_logged = false;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            match list_login1_inhibitors(&proxy).await {
+                Ok(rows) => {
+                    unavailable_logged = false;
+                    let holds = tracker.reconcile(rows, now_ms());
+                    if holds == published {
+                        continue;
+                    }
+
+                    eventline::info!(
+                        "D-Bus: login1 blocking idle inhibitors changed: {} -> {}",
+                        published.len(),
+                        holds.len()
+                    );
+                    published = holds.clone();
+                    sink.push(Event::Login1IdleInhibitorsChanged {
+                        holds,
+                        now_ms: now_ms(),
+                    });
+                }
+                Err(error) if !unavailable_logged => {
+                    unavailable_logged = true;
+                    eventline::warn!(
+                        "D-Bus: could not query login1 idle inhibitors; preserving last known state: {error:?}"
+                    );
+                }
+                Err(_) => {}
+            }
+        }
+    });
+}
+
 async fn tracker_remove_sender(
     tracker: &Arc<Mutex<DbusInhibitTracker>>,
     sink: &Arc<dyn EventSink>,
@@ -766,7 +901,11 @@ async fn resolve_sender_identity(
         return (None, None);
     };
 
-    let process = fs::read_to_string(format!("/proc/{pid}/comm"))
+    (Some(pid), process_name_for_pid(pid))
+}
+
+fn process_name_for_pid(pid: u32) -> Option<String> {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
         .ok()
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
@@ -777,9 +916,7 @@ async fn resolve_sender_identity(
                     path.file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                 })
-        });
-
-    (Some(pid), process)
+        })
 }
 
 fn pending_hold(
@@ -1068,10 +1205,15 @@ async fn run_dbus(
             eventline::warn!("D-Bus: inhibit monitoring requested, but session bus is unavailable");
         }
     } else {
-        eventline::info!("D-Bus: session inhibit monitoring disabled by config");
+        eventline::info!("D-Bus: inhibit monitoring disabled by config");
     }
 
     if let Some(sys) = sys.as_ref() {
+        if enable_dbus_inhibit {
+            spawn_login1_idle_inhibit_monitor(sys.clone(), sink.clone());
+            eventline::info!("D-Bus: login1 blocking idle inhibitors map to suspend-only holds");
+        }
+
         if enable_loginctl {
             match Proxy::new(
                 sys,
@@ -1356,7 +1498,7 @@ async fn get_current_session_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{DbusInhibitTracker, PendingHold, stream_block_is_browser};
+    use super::{DbusInhibitTracker, Login1IdleTracker, PendingHold, stream_block_is_browser};
 
     fn pending(protocol: &str) -> PendingHold {
         PendingHold {
@@ -1461,5 +1603,50 @@ Properties:
         assert!(!stream_block_is_browser(
             "Properties:\n    application.name = \"Zoom\""
         ));
+    }
+
+    #[test]
+    fn login1_tracker_keeps_only_blocking_idle_holds_and_cleans_up() {
+        let codex = (
+            "idle".to_string(),
+            "codex".to_string(),
+            "active turn".to_string(),
+            "block".to_string(),
+            1000,
+            u32::MAX,
+        );
+        let rows = vec![
+            codex.clone(),
+            (
+                "sleep".to_string(),
+                "upower".to_string(),
+                "polling".to_string(),
+                "delay".to_string(),
+                0,
+                1,
+            ),
+            (
+                "idle:sleep".to_string(),
+                "backup".to_string(),
+                "working".to_string(),
+                "block".to_string(),
+                1000,
+                u32::MAX - 1,
+            ),
+        ];
+        let mut tracker = Login1IdleTracker::default();
+
+        let first = tracker.reconcile(rows.clone(), 1_000);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].who, "backup");
+        assert_eq!(first[1].who, "codex");
+        assert_eq!(first[1].started_at_ms, 1_000);
+
+        let unchanged = tracker.reconcile(rows, 5_000);
+        assert_eq!(unchanged[1].started_at_ms, 1_000);
+
+        assert!(tracker.reconcile(Vec::new(), 6_000).is_empty());
+        let restarted = tracker.reconcile(vec![codex], 7_000);
+        assert_eq!(restarted[0].started_at_ms, 7_000);
     }
 }

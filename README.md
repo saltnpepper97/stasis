@@ -48,7 +48,7 @@ It is a **context-aware, event-driven idle manager** built around explicit state
 - ⏸️ Wayland idle inhibitor support
   - Honors compositor and application inhibitors
 - 🛌 Laptop-aware power handling
-  - Optional D-Bus integration for lid events, suspend/resume, and session inhibit traffic
+  - Optional D-Bus integration for lid events, suspend/resume, session inhibit traffic, and login1 idle inhibitors
 - ⚙️ Flexible action plans
   - Startup steps, sequential steps, instant actions, resume hooks
 - 🔁 Manual idle inhibition
@@ -119,7 +119,7 @@ Dependencies:
 - rust / cargo (build)
 - wayland (runtime)
 - dbus (runtime, strongly recommended; required for full feature set)
-  - used for session inhibit handling (`enable_dbus_inhibit`)
+  - used for session and login1 inhibit handling (`enable_dbus_inhibit`)
   - used for portal/browser inhibit traffic
   - used for lid events and suspend/resume integration
 - pulseaudio or pipewire-pulse (runtime, recommended for media/call detection via `pactl`)
@@ -175,15 +175,21 @@ Stasis supports inhibit messages from session D-Bus, including:
 - `org.gnome.SessionManager` `Inhibit` / `Uninhibit`
 - `org.freedesktop.portal.Inhibit` (`Inhibit` / `CreateMonitor`) with release via `org.freedesktop.portal.Request.Close`
 
+On the system bus, Stasis also polls login1 `ListInhibitors` for blocking
+`idle` entries. These are authoritative lifetime-scoped holds (for example,
+Codex holds one only while a turn is active). Stasis maps them to suspend-only
+policy: lock, DPMS, and other earlier plan steps continue, while automatic
+suspend waits until the inhibitor disappears.
+
 Config key:
 
 - `enable_dbus_inhibit true|false` (default true)
 
-Use this when you want Stasis to honor session-bus inhibit requests from browsers, Steam, portal clients, and similar apps.
+Use this when you want Stasis to honor session-bus inhibit requests from browsers, Steam, and portal clients, plus login1 blocking `idle` inhibitors.
 
 Important separation:
 
-- `enable_dbus_inhibit` is for browser/app inhibit traffic coming from session D-Bus.
+- `enable_dbus_inhibit` covers browser/app inhibit traffic from session D-Bus and blocking login1 `idle` inhibitors from the system bus.
 - `monitor_media` is only for non-browser media/audio state.
 - Browser media inhibit is not handled by `monitor_media`; it is handled by D-Bus inhibit monitoring.
 
@@ -223,10 +229,11 @@ still runs immediately.
     stasis reload
     stasis stop
 
-`stasis blame` explains why the idle plan is not progressing. It names active
+`stasis blame` explains why an idle action is held. It names active
 manual/system pauses, matched applications and media, suspend-only blockers,
-and live D-Bus inhibit cookies or portal request handles. The `--json` form is
-a versioned snapshot for scripts.
+live D-Bus inhibit cookies or portal request handles, and login1 idle holds.
+The `--json` form is a versioned snapshot for scripts. Active login1 idle holds
+are also included structurally in `stasis info --json`.
 
 `stasis tray` runs an optional StatusNotifier tray frontend. It does not replace
 `stasis info --json`; Waybar and other status bars can keep using the JSON output

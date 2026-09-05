@@ -63,12 +63,14 @@ default:
   # fallback; this setting does not run or select your locker command.
   #enable_loginctl_integration true
 
-  # Optional: listen for session D-Bus inhibit traffic (default true).
+  # Optional: listen for session D-Bus inhibit traffic and blocking login1
+  # idle inhibitors (default true).
   # This gate is not browser-only: browsers, Steam, and other desktop apps can
   # request inhibit through standard D-Bus/portal paths.
   # Browser/media-tab inhibit lives here, not under monitor_media.
-  # Disable this only if you explicitly do not want D-Bus inhibit requests
-  # to pause idle progression.
+  # login1 idle inhibitors block only automatic suspend, leaving earlier plan
+  # actions such as lock and DPMS available.
+  # Disable this only if you explicitly do not want D-Bus inhibitors honored.
   #enable_dbus_inhibit false
 
   # Optional: run before suspending (hook).
@@ -244,12 +246,14 @@ default:
   # fallback; this setting does not run or select your locker command.
   #enable_loginctl_integration true
 
-  # Optional: listen for session D-Bus inhibit traffic (default true).
+  # Optional: listen for session D-Bus inhibit traffic and blocking login1
+  # idle inhibitors (default true).
   # This gate is not browser-only: browsers, Steam, and other desktop apps can
   # request inhibit through standard D-Bus/portal paths.
   # Browser/media-tab inhibit lives here, not under monitor_media.
-  # Disable this only if you explicitly do not want D-Bus inhibit requests
-  # to pause idle progression.
+  # login1 idle inhibitors block only automatic suspend, leaving earlier plan
+  # actions such as lock and DPMS available.
+  # Disable this only if you explicitly do not want D-Bus inhibitors honored.
   #enable_dbus_inhibit false
 
   # Optional: run before suspending (e.g., ensure lock is up)

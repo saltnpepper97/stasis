@@ -20,6 +20,12 @@ impl Manager {
         let profile = Some(state.active_profile().unwrap_or("default").to_string());
 
         let rendered = crate::core::manager::info::render_info(cfg_opt.as_ref(), state, now_ms);
+        let login1_idle_inhibitors = state
+            .login1_idle_holds()
+            .iter()
+            .cloned()
+            .map(|hold| hold.with_age(now_ms))
+            .collect();
 
         let waybar = WaybarInfo {
             text: text.to_string(),
@@ -27,6 +33,7 @@ impl Manager {
             class: alt.to_string(),
             tooltip: rendered.tooltip,
             profile,
+            login1_idle_inhibitors,
         };
 
         InfoSnapshot::new(waybar, rendered.pretty, state.manually_paused())
@@ -46,6 +53,12 @@ impl Manager {
     pub fn blame_snapshot(&self, state: &State, now_ms: u64) -> BlameSnapshot {
         let dbus_holds = state
             .dbus_holds()
+            .iter()
+            .cloned()
+            .map(|hold| hold.with_age(now_ms))
+            .collect();
+        let login1_idle_holds = state
+            .login1_idle_holds()
             .iter()
             .cloned()
             .map(|hold| hold.with_age(now_ms))
@@ -77,6 +90,7 @@ impl Manager {
                 state.suspend_media_inhibitor_sources(),
             ),
             dbus_holds,
+            login1_idle_holds,
         }
     }
 }

@@ -2,7 +2,7 @@
 // License: GPL-3.0-only
 
 use crate::core::action::Action;
-use crate::core::blame::DbusHold;
+use crate::core::blame::{DbusHold, Login1IdleHold};
 use crate::core::config::{
     Config, ConfigFile, PartialConfig, Pattern, PlanSource, PlanStep, PlanStepKind, Profile,
     ProfileMode,
@@ -1076,6 +1076,86 @@ fn manual_suspend_trigger_bypasses_suspend_inhibitors() {
             },
         )
         .unwrap(),
+        vec![Action::RunCommand {
+            command: "suspend".to_string()
+        }]
+    );
+}
+
+#[test]
+fn login1_idle_hold_blocks_only_suspend_and_cleans_up() {
+    let plan = vec![
+        step(PlanStepKind::Dpms, 1, "dpms"),
+        step(PlanStepKind::Suspend, 1, "suspend"),
+    ];
+    let mut mgr = Manager::new(cfg_with_plan(plan));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    let hold = Login1IdleHold {
+        status: "live".to_string(),
+        what: "idle".to_string(),
+        who: "codex".to_string(),
+        why: "Codex is running an active turn".to_string(),
+        mode: "block".to_string(),
+        uid: 1000,
+        pid: 42,
+        process: Some("codex".to_string()),
+        started_at_ms: 500,
+        age_ms: 0,
+    };
+    mgr.handle_event(
+        &mut state,
+        Event::Login1IdleInhibitorsChanged {
+            holds: vec![hold],
+            now_ms: 500,
+        },
+    )
+    .unwrap();
+
+    assert!(!state.paused());
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 2_000 })
+            .unwrap()
+            .is_empty()
+    );
+
+    let snapshot = mgr.snapshot(&state, 4_000);
+    assert_eq!(snapshot.waybar.login1_idle_inhibitors.len(), 1);
+    assert!(
+        snapshot
+            .pretty_text
+            .contains("login1 Idle Inhibitors Blocking Suspend: 1")
+    );
+    assert!(snapshot.pretty_text.contains("D-Bus Inhibiting: yes"));
+    let blame = mgr.blame_snapshot(&state, 4_000);
+    assert_eq!(blame.login1_idle_holds[0].who, "codex");
+    assert_eq!(blame.login1_idle_holds[0].age_ms, 3_500);
+
+    mgr.handle_event(
+        &mut state,
+        Event::Login1IdleInhibitorsChanged {
+            holds: Vec::new(),
+            now_ms: 5_000,
+        },
+    )
+    .unwrap();
+    assert!(state.login1_idle_holds().is_empty());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 5_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 6_000 })
+            .unwrap(),
         vec![Action::RunCommand {
             command: "suspend".to_string()
         }]

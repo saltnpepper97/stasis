@@ -3,6 +3,8 @@
 
 use serde::Serialize;
 
+use crate::core::blame::Login1IdleHold;
+
 /// Stable state published by `stasis watch`.
 ///
 /// This intentionally excludes timer-derived display details so listeners only
@@ -38,6 +40,8 @@ pub struct WaybarInfo {
     pub class: String,
     pub tooltip: String,
     pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub login1_idle_inhibitors: Vec<Login1IdleHold>,
 }
 
 impl InfoSnapshot {

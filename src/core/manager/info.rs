@@ -65,6 +65,7 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
     let media = state.media_inhibitor_count();
     let suspend_app = state.suspend_app_inhibitor_count();
     let suspend_media = state.suspend_media_inhibitor_count();
+    let login1_idle = state.login1_idle_holds().len();
 
     out.push_str(&format!(
         "Manual Pause: {}\n",
@@ -79,8 +80,12 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
         suspend_media
     ));
     out.push_str(&format!(
+        "login1 Idle Inhibitors Blocking Suspend: {}\n",
+        login1_idle
+    ));
+    out.push_str(&format!(
         "D-Bus Inhibiting: {}\n",
-        yesno(!state.dbus_holds().is_empty())
+        yesno(!state.dbus_holds().is_empty() || !state.login1_idle_holds().is_empty())
     ));
 
     if let Some(cfg) = cfg_opt {
@@ -119,6 +124,7 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     let media = state.media_inhibitor_count();
     let suspend_app = state.suspend_app_inhibitor_count();
     let suspend_media = state.suspend_media_inhibitor_count();
+    let login1_idle = state.login1_idle_holds().len();
 
     // Keep tooltip compact but consistent.
     t.push_str(&format!(
@@ -134,8 +140,12 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
         suspend_media
     ));
     t.push_str(&format!(
+        "login1 Idle Inhibitors Blocking Suspend: {}\n",
+        login1_idle
+    ));
+    t.push_str(&format!(
         "D-Bus Inhibiting: {}\n",
-        yesno(!state.dbus_holds().is_empty())
+        yesno(!state.dbus_holds().is_empty() || !state.login1_idle_holds().is_empty())
     ));
 
     if let Some(cfg) = cfg_opt {

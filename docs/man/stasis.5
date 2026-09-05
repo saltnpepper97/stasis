@@ -47,14 +47,16 @@ before the suspend step command (or before the built-in suspend action).
 
 .TP
 .B enable_dbus_inhibit true|false
-Controls whether Stasis listens to D-Bus inhibit signals on the session bus.
-When enabled (default), D-Bus inhibit state can hold Stasis in waiting-for-idle
-until inhibit clears.
+Controls whether Stasis honors D-Bus inhibitors. When enabled (default),
+session-bus inhibitors can hold the full idle plan. Stasis also discovers
+blocking login1 \fBidle\fR inhibitors on the system bus and maps them to
+suspend-only holds: lock, DPMS, and earlier plan steps remain available.
 .PP
-This only controls session D-Bus inhibit monitoring. It does not affect
+This does not affect
 \fBmonitor_media\fR audio/media detection or \fBmedia_blacklist\fR filtering.
 .PP
-Use this for browser and other app inhibit requests carried over session D-Bus.
+Use this for browser and other app inhibit requests carried over session D-Bus,
+and for lifetime-scoped login1 idle holds such as an active Codex turn.
 Browser/media-tab inhibit is handled here, not by \fBmonitor_media\fR.
 .PP
 \fBImportant:\fR this requires the compositor to be started in a real D-Bus session

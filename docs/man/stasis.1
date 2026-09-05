@@ -135,13 +135,15 @@ Stop all running Stasis instances.
 .TP
 .BR info " " [\-\-json]
 Display current session information.
-With \fB--json\fR, output machine-readable JSON.
+With \fB--json\fR, output machine-readable JSON. Active blocking login1
+idle inhibitors are included as structured entries.
 
 .TP
 .BR blame " " [\-\-json]
 Explain what currently prevents idle progression. The human-readable output
 groups manual and system pauses, regular application and media inhibitors,
-suspend-only inhibitors, and live D-Bus holds. D-Bus entries include the
+suspend-only inhibitors, live D-Bus holds, and blocking login1 idle holds.
+D-Bus entries include the
 protocol, available application or process identity, reason, flags, age, and
 cookie or request handle.
 .PP

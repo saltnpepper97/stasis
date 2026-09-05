@@ -425,6 +425,11 @@ impl Manager {
                 state.set_dbus_holds(holds);
             }
 
+            Event::Login1IdleInhibitorsChanged { holds, .. } => {
+                state.set_login1_idle_holds(holds);
+                self.refresh_timing_holds(state, &cfg, now_ms);
+            }
+
             Event::BrowserSourceCaptureChanged { active, .. } => {
                 state.set_browser_source_capture_active(active);
             }

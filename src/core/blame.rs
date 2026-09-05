@@ -28,6 +28,27 @@ impl DbusHold {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Login1IdleHold {
+    pub status: String,
+    pub what: String,
+    pub who: String,
+    pub why: String,
+    pub mode: String,
+    pub uid: u32,
+    pub pid: u32,
+    pub process: Option<String>,
+    pub started_at_ms: u64,
+    pub age_ms: u64,
+}
+
+impl Login1IdleHold {
+    pub fn with_age(mut self, now_ms: u64) -> Self {
+        self.age_ms = now_ms.saturating_sub(self.started_at_ms);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BlameCategory {
     pub active: bool,
     pub count: u64,
@@ -57,6 +78,7 @@ pub struct BlameSnapshot {
     pub suspend_app_inhibitors: BlameCategory,
     pub suspend_media_inhibitors: BlameCategory,
     pub dbus_holds: Vec<DbusHold>,
+    pub login1_idle_holds: Vec<Login1IdleHold>,
 }
 
 impl BlameSnapshot {
@@ -117,10 +139,35 @@ impl BlameSnapshot {
             }
         }
 
+        if self.login1_idle_holds.is_empty() {
+            out.push_str("login1 idle holds: none\n");
+        } else {
+            out.push_str(&format!(
+                "login1 idle holds: {} blocking suspend\n",
+                self.login1_idle_holds.len()
+            ));
+            for hold in &self.login1_idle_holds {
+                let identity = if hold.who.trim().is_empty() {
+                    hold.process.as_deref().unwrap_or("unresolved application")
+                } else {
+                    &hold.who
+                };
+                out.push_str(&format!(
+                    "  - {identity} [{}], age {}",
+                    hold.status,
+                    human_duration(hold.age_ms)
+                ));
+                if !hold.why.trim().is_empty() {
+                    out.push_str(&format!(", reason: {}", hold.why));
+                }
+                out.push_str(&format!(", pid: {}\n", hold.pid));
+            }
+        }
+
         if !self.progression_blocked {
             out.push_str("Result: no current blocker\n");
         } else {
-            out.push_str("Result: idle progression is currently blocked\n");
+            out.push_str("Result: an automatic idle action is currently blocked\n");
         }
 
         out.trim_end().to_string()
@@ -197,6 +244,7 @@ mod tests {
                 cookie: Some(7),
                 handle: None,
             }],
+            login1_idle_holds: Vec::new(),
         };
 
         let rendered = snapshot.render_human();
