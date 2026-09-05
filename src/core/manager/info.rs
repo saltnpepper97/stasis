@@ -80,7 +80,7 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
     ));
     out.push_str(&format!(
         "D-Bus Inhibiting: {}\n",
-        yesno(state.browser_activity_active(now_ms))
+        yesno(!state.dbus_holds().is_empty())
     ));
 
     if let Some(cfg) = cfg_opt {
@@ -135,7 +135,7 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     ));
     t.push_str(&format!(
         "D-Bus Inhibiting: {}\n",
-        yesno(state.browser_activity_active(now_ms))
+        yesno(!state.dbus_holds().is_empty())
     ));
 
     if let Some(cfg) = cfg_opt {

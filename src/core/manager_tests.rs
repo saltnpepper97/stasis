@@ -2,6 +2,7 @@
 // License: GPL-3.0-only
 
 use crate::core::action::Action;
+use crate::core::blame::DbusHold;
 use crate::core::config::{
     Config, ConfigFile, PartialConfig, Pattern, PlanSource, PlanStep, PlanStepKind, Profile,
     ProfileMode,
@@ -76,6 +77,59 @@ fn watch_event_reports_only_shell_facing_state() {
     assert!(event.paused);
     assert!(event.manually_paused);
     assert_eq!(event.profile, "work");
+}
+
+#[test]
+fn blame_snapshot_reports_named_sources_and_live_dbus_metadata() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![]));
+    let mut state = State::new(0);
+
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 1,
+            suspend_count: 0,
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorSources {
+            sources: vec!["handbrake".to_string()],
+            suspend_sources: Vec::new(),
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::DbusInhibitorsChanged {
+            holds: vec![DbusHold {
+                status: "live".to_string(),
+                protocol: "org.freedesktop.ScreenSaver".to_string(),
+                source: "legacy-cookie".to_string(),
+                sender: ":1.9".to_string(),
+                application: Some("Voice chat".to_string()),
+                process: Some("chatgpt".to_string()),
+                pid: Some(99),
+                reason: Some("screen sharing".to_string()),
+                flags: None,
+                started_at_ms: 1_000,
+                age_ms: 0,
+                cookie: Some(4),
+                handle: None,
+            }],
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+
+    let blame = mgr.blame_snapshot(&state, 6_000);
+    assert_eq!(blame.schema_version, 1);
+    assert_eq!(blame.app_inhibitors.sources, ["handbrake"]);
+    assert_eq!(blame.dbus_holds[0].age_ms, 5_000);
+    assert_eq!(blame.dbus_holds[0].cookie, Some(4));
 }
 
 #[test]

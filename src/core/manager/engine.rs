@@ -323,6 +323,10 @@ impl Manager {
                 state.set_media_inhibitor_count(0);
                 state.set_suspend_app_inhibitor_count(0);
                 state.set_suspend_media_inhibitor_count(0);
+                state.set_app_inhibitor_sources(Vec::new());
+                state.set_media_inhibitor_sources(Vec::new());
+                state.set_suspend_app_inhibitor_sources(Vec::new());
+                state.set_suspend_media_inhibitor_sources(Vec::new());
                 self.refresh_timing_holds(state, &cfg, now_ms);
 
                 self.restore_low_power_if_active(state, &mut out);
@@ -397,6 +401,32 @@ impl Manager {
                         eventline::info!("media ended");
                     }
                 }
+            }
+
+            Event::AppInhibitorSources {
+                sources,
+                suspend_sources,
+                ..
+            } => {
+                state.set_app_inhibitor_sources(sources);
+                state.set_suspend_app_inhibitor_sources(suspend_sources);
+            }
+
+            Event::MediaInhibitorSources {
+                sources,
+                suspend_sources,
+                ..
+            } => {
+                state.set_media_inhibitor_sources(sources);
+                state.set_suspend_media_inhibitor_sources(suspend_sources);
+            }
+
+            Event::DbusInhibitorsChanged { holds, .. } => {
+                state.set_dbus_holds(holds);
+            }
+
+            Event::BrowserSourceCaptureChanged { active, .. } => {
+                state.set_browser_source_capture_active(active);
             }
 
             Event::CompositorResumed { .. } => {

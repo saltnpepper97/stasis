@@ -2,6 +2,7 @@
 // License: GPL-3.0-only
 
 use crate::core::{
+    blame::{BlameCategory, BlameSnapshot},
     info::{InfoSnapshot, WatchEvent, WaybarInfo},
     state::State,
 };
@@ -39,6 +40,43 @@ impl Manager {
             paused: state.paused(),
             manually_paused: state.manually_paused(),
             profile: state.active_profile().unwrap_or("default").to_string(),
+        }
+    }
+
+    pub fn blame_snapshot(&self, state: &State, now_ms: u64) -> BlameSnapshot {
+        let dbus_holds = state
+            .dbus_holds()
+            .iter()
+            .cloned()
+            .map(|hold| hold.with_age(now_ms))
+            .collect();
+
+        BlameSnapshot {
+            schema_version: 1,
+            generated_at_ms: now_ms,
+            progression_blocked: state.paused()
+                || state.browser_activity_active(now_ms)
+                || state.suspend_inhibitors_active(),
+            manual_pause: state.manually_paused(),
+            system_pause: state.system_paused(),
+            browser_source_capture: state.browser_source_capture_active(),
+            app_inhibitors: BlameCategory::new(
+                state.app_inhibitor_count(),
+                state.app_inhibitor_sources(),
+            ),
+            media_inhibitors: BlameCategory::new(
+                state.media_inhibitor_count(),
+                state.media_inhibitor_sources(),
+            ),
+            suspend_app_inhibitors: BlameCategory::new(
+                state.suspend_app_inhibitor_count(),
+                state.suspend_app_inhibitor_sources(),
+            ),
+            suspend_media_inhibitors: BlameCategory::new(
+                state.suspend_media_inhibitor_count(),
+                state.suspend_media_inhibitor_sources(),
+            ),
+            dbus_holds,
         }
     }
 }

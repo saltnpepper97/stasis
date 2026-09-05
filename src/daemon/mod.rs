@@ -25,12 +25,12 @@ use crate::services::low_power::LowPowerController;
 type AnyError = Box<dyn std::error::Error + Send + Sync>;
 
 struct MpscEventSink {
-    tx: mpsc::Sender<ManagerMsg>,
+    tx: mpsc::UnboundedSender<ManagerMsg>,
 }
 
 impl EventSink for MpscEventSink {
     fn push(&self, ev: Event) {
-        let _ = self.tx.try_send(ManagerMsg::Event(ev));
+        let _ = self.tx.send(ManagerMsg::Event(ev));
     }
 }
 

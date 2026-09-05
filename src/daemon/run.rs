@@ -64,7 +64,20 @@ impl Daemon {
         }
 
         {
-            let sink: Arc<dyn EventSink> = Arc::new(MpscEventSink { tx: tx.clone() });
+            // The D-Bus monitor runs on its own runtime and must never lose a
+            // lifecycle edge merely because the manager queue is momentarily
+            // full. Bridge an ordered unbounded source into the bounded manager
+            // queue with backpressure here.
+            let (dbus_tx, mut dbus_rx) = mpsc::unbounded_channel();
+            let manager_tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = dbus_rx.recv().await {
+                    if manager_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let sink: Arc<dyn EventSink> = Arc::new(MpscEventSink { tx: dbus_tx });
 
             match crate::services::dbus::spawn_dbus_listeners(
                 sink,
@@ -207,6 +220,12 @@ impl Daemon {
                         ManagerMsg::GetInfo { reply } => {
                             let now_ms = crate::core::utils::now_ms();
                             let snap = self.manager.snapshot(&self.state, now_ms);
+                            let _ = reply.send(snap);
+                        }
+
+                        ManagerMsg::GetBlame { reply } => {
+                            let now_ms = crate::core::utils::now_ms();
+                            let snap = self.manager.blame_snapshot(&self.state, now_ms);
                             let _ = reply.send(snap);
                         }
 

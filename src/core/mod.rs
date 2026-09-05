@@ -2,6 +2,7 @@
 // License: GPL-3.0-only
 
 pub mod action;
+pub mod blame;
 pub mod config;
 pub mod error;
 pub mod events;

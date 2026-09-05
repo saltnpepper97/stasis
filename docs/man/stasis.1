@@ -138,6 +138,18 @@ Display current session information.
 With \fB--json\fR, output machine-readable JSON.
 
 .TP
+.BR blame " " [\-\-json]
+Explain what currently prevents idle progression. The human-readable output
+groups manual and system pauses, regular application and media inhibitors,
+suspend-only inhibitors, and live D-Bus holds. D-Bus entries include the
+protocol, available application or process identity, reason, flags, age, and
+cookie or request handle.
+.PP
+With \fB--json\fR, emit the versioned machine-readable snapshot. Unresolved
+D-Bus identities are marked as live but unresolved; closed requests are not
+reported as active holds.
+
+.TP
 .B watch
 Stream the current shell-facing Stasis state as newline-delimited JSON, then
 emit another object whenever it changes. This lets shells react to pause/resume,
@@ -209,6 +221,9 @@ Clear profile overlay:
 .TP
 Watch state changes:
 .B stasis watch
+.TP
+Explain current blockers:
+.B stasis blame
 .TP
 Pause indefinitely:
 .B stasis pause

@@ -142,6 +142,13 @@ async fn seed_idle(tx: &mpsc::Sender<ManagerMsg>) {
             now_ms,
         }))
         .await;
+    let _ = tx
+        .send(ManagerMsg::Event(Event::MediaInhibitorSources {
+            sources: Vec::new(),
+            suspend_sources: Vec::new(),
+            now_ms,
+        }))
+        .await;
 }
 
 #[derive(Debug)]
@@ -155,6 +162,7 @@ pub struct MediaService {
     last_poll_ms: u64,
 
     last_counts: Option<(u64, u64)>,
+    last_sources: (Vec<String>, Vec<String>),
 
     force_emit: bool,
 }
@@ -179,6 +187,7 @@ impl MediaService {
             poll_interval_ms: 1000,
             last_poll_ms: 0,
             last_counts: None,
+            last_sources: (Vec::new(), Vec::new()),
             force_emit: false,
         }
     }
@@ -239,40 +248,51 @@ impl MediaService {
         }
         self.last_poll_ms = now_ms;
 
-        let counts = match self.backend {
+        let sources = match self.backend {
             MediaBackend::Pactl => {
-                match pactl_sink_input_counts(
+                match pactl_sink_input_sources(
                     self.ignore_remote_media,
                     &self.media_blacklist,
                     &self.suspend_inhibit_media,
                 ) {
-                    Ok(counts) => counts,
+                    Ok(sources) => sources,
                     Err(e) => {
                         eventline::warn!(
                             "media: pactl sink-input query failed (keeping previous): {}",
                             e
                         );
-                        self.last_counts.unwrap_or((0, 0))
+                        self.last_sources.clone()
                     }
                 }
             }
-            MediaBackend::None => (0, 0),
+            MediaBackend::None => (Vec::new(), Vec::new()),
         };
 
-        self.emit_counts(now_ms, counts)
+        let counts = (sources.0.len() as u64, sources.1.len() as u64);
+
+        self.emit_counts(now_ms, counts, sources)
     }
 
-    fn emit_counts(&mut self, now_ms: u64, counts: (u64, u64)) -> Option<Vec<Event>> {
+    fn emit_counts(
+        &mut self,
+        now_ms: u64,
+        counts: (u64, u64),
+        sources: (Vec<String>, Vec<String>),
+    ) -> Option<Vec<Event>> {
         let first_poll = self.last_counts.is_none();
         let previous = self.last_counts.unwrap_or((0, 0));
-        let changed = !first_poll && previous != counts;
+        let counts_changed = !first_poll && previous != counts;
+        let sources_changed = !first_poll && self.last_sources != sources;
+        let changed = counts_changed || sources_changed;
 
-        if changed {
+        if counts_changed {
             eventline::info!(
                 "media: counts {:?} -> {:?} (full, suspend-only)",
                 previous,
                 counts
             );
+        } else if sources_changed {
+            eventline::debug!("media: source identities changed");
         } else if (first_poll || self.force_emit) && counts != (0, 0) {
             eventline::info!(
                 "media: counts {:?} -> {:?} (full, suspend-only)",
@@ -283,12 +303,20 @@ impl MediaService {
 
         if first_poll || changed || self.force_emit {
             self.last_counts = Some(counts);
+            self.last_sources = sources.clone();
             self.force_emit = false;
-            return Some(vec![Event::MediaInhibitorCount {
-                count: counts.0,
-                suspend_count: counts.1,
-                now_ms,
-            }]);
+            return Some(vec![
+                Event::MediaInhibitorCount {
+                    count: counts.0,
+                    suspend_count: counts.1,
+                    now_ms,
+                },
+                Event::MediaInhibitorSources {
+                    sources: sources.0,
+                    suspend_sources: sources.1,
+                    now_ms,
+                },
+            ]);
         }
 
         None
@@ -331,11 +359,11 @@ fn pactl_available() -> bool {
         .unwrap_or(false)
 }
 
-fn pactl_sink_input_counts(
+fn pactl_sink_input_sources(
     ignore_remote_media: bool,
     media_blacklist: &[Pattern],
     suspend_inhibit_media: &[Pattern],
-) -> Result<(u64, u64), String> {
+) -> Result<(Vec<String>, Vec<String>), String> {
     let out = session_env_cmd("pactl")
         .args(["list", "sink-inputs"])
         .output()
@@ -347,7 +375,7 @@ fn pactl_sink_input_counts(
     }
 
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(pactl_text_counts(
+    Ok(pactl_text_sources(
         &text,
         ignore_remote_media,
         media_blacklist,
@@ -361,29 +389,51 @@ enum MediaInhibitKind {
     Suspend,
 }
 
+#[cfg(test)]
 fn pactl_text_counts(
     text: &str,
     ignore_remote_media: bool,
     media_blacklist: &[Pattern],
     suspend_inhibit_media: &[Pattern],
 ) -> (u64, u64) {
-    if text.trim().is_empty() {
-        return (0, 0);
-    }
-
-    let mut counts = (0u64, 0u64);
-    let mut block = String::new();
-    let mut saw_header = false;
-
-    let count_block = |block: &str, counts: &mut (u64, u64)| match sink_input_inhibit_kind(
-        block,
+    let sources = pactl_text_sources(
+        text,
         ignore_remote_media,
         media_blacklist,
         suspend_inhibit_media,
-    ) {
-        Some(MediaInhibitKind::Full) => counts.0 += 1,
-        Some(MediaInhibitKind::Suspend) => counts.1 += 1,
-        None => {}
+    );
+    (sources.0.len() as u64, sources.1.len() as u64)
+}
+
+fn pactl_text_sources(
+    text: &str,
+    ignore_remote_media: bool,
+    media_blacklist: &[Pattern],
+    suspend_inhibit_media: &[Pattern],
+) -> (Vec<String>, Vec<String>) {
+    if text.trim().is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut sources = (Vec::new(), Vec::new());
+    let mut block = String::new();
+    let mut saw_header = false;
+
+    let collect_block = |block: &str, sources: &mut (Vec<String>, Vec<String>)| {
+        let Some(kind) = sink_input_inhibit_kind(
+            block,
+            ignore_remote_media,
+            media_blacklist,
+            suspend_inhibit_media,
+        ) else {
+            return;
+        };
+        let props = parse_pactl_properties(block);
+        let label = media_source_label(&props);
+        match kind {
+            MediaInhibitKind::Full => sources.0.push(label),
+            MediaInhibitKind::Suspend => sources.1.push(label),
+        }
     };
 
     for line in text.lines() {
@@ -392,7 +442,7 @@ fn pactl_text_counts(
 
         if is_header {
             if saw_header {
-                count_block(&block, &mut counts);
+                collect_block(&block, &mut sources);
             }
             block.clear();
             saw_header = true;
@@ -405,10 +455,25 @@ fn pactl_text_counts(
     }
 
     if saw_header {
-        count_block(&block, &mut counts);
+        collect_block(&block, &mut sources);
     }
 
-    counts
+    sources
+}
+
+fn media_source_label(props: &HashMap<String, String>) -> String {
+    for key in [
+        "application.name",
+        "app.name",
+        "application.process.binary",
+        "application.id",
+        "node.description",
+    ] {
+        if let Some(value) = props.get(key).filter(|value| !value.trim().is_empty()) {
+            return value.trim().to_string();
+        }
+    }
+    "unresolved media stream".to_string()
 }
 
 fn sink_input_inhibit_kind(

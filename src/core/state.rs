@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use crate::core::blame::DbusHold;
 use crate::core::config::{PlanSource, PlanStep, PlanStepKind};
 use crate::core::events::PowerState;
 
@@ -32,6 +33,12 @@ pub struct State {
     media_inhibitor_count: u64,
     suspend_app_inhibitor_count: u64,
     suspend_media_inhibitor_count: u64,
+    app_inhibitor_sources: Vec<String>,
+    media_inhibitor_sources: Vec<String>,
+    suspend_app_inhibitor_sources: Vec<String>,
+    suspend_media_inhibitor_sources: Vec<String>,
+    dbus_holds: Vec<DbusHold>,
+    browser_source_capture_active: bool,
 
     // Pause policy
     manually_paused: bool,
@@ -114,6 +121,12 @@ impl State {
             media_inhibitor_count: 0,
             suspend_app_inhibitor_count: 0,
             suspend_media_inhibitor_count: 0,
+            app_inhibitor_sources: Vec::new(),
+            media_inhibitor_sources: Vec::new(),
+            suspend_app_inhibitor_sources: Vec::new(),
+            suspend_media_inhibitor_sources: Vec::new(),
+            dbus_holds: Vec::new(),
+            browser_source_capture_active: false,
             manually_paused: false,
             system_paused: false,
             paused: false,
@@ -334,6 +347,30 @@ impl State {
         self.suspend_media_inhibitor_count
     }
 
+    pub fn app_inhibitor_sources(&self) -> &[String] {
+        &self.app_inhibitor_sources
+    }
+
+    pub fn media_inhibitor_sources(&self) -> &[String] {
+        &self.media_inhibitor_sources
+    }
+
+    pub fn suspend_app_inhibitor_sources(&self) -> &[String] {
+        &self.suspend_app_inhibitor_sources
+    }
+
+    pub fn suspend_media_inhibitor_sources(&self) -> &[String] {
+        &self.suspend_media_inhibitor_sources
+    }
+
+    pub fn dbus_holds(&self) -> &[DbusHold] {
+        &self.dbus_holds
+    }
+
+    pub fn browser_source_capture_active(&self) -> bool {
+        self.browser_source_capture_active
+    }
+
     pub fn manually_paused(&self) -> bool {
         self.manually_paused
     }
@@ -418,6 +455,30 @@ impl State {
 
     pub fn set_suspend_media_inhibitor_count(&mut self, count: u64) {
         self.suspend_media_inhibitor_count = count;
+    }
+
+    pub fn set_app_inhibitor_sources(&mut self, sources: Vec<String>) {
+        self.app_inhibitor_sources = sources;
+    }
+
+    pub fn set_media_inhibitor_sources(&mut self, sources: Vec<String>) {
+        self.media_inhibitor_sources = sources;
+    }
+
+    pub fn set_suspend_app_inhibitor_sources(&mut self, sources: Vec<String>) {
+        self.suspend_app_inhibitor_sources = sources;
+    }
+
+    pub fn set_suspend_media_inhibitor_sources(&mut self, sources: Vec<String>) {
+        self.suspend_media_inhibitor_sources = sources;
+    }
+
+    pub fn set_dbus_holds(&mut self, holds: Vec<DbusHold>) {
+        self.dbus_holds = holds;
+    }
+
+    pub fn set_browser_source_capture_active(&mut self, active: bool) {
+        self.browser_source_capture_active = active;
     }
 
     pub fn set_suspend_hold_started_ms(&mut self, value: Option<u64>) {

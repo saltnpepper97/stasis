@@ -209,6 +209,7 @@ still runs immediately.
 ## CLI Usage
 
     stasis info [--json]
+    stasis blame [--json]
     stasis watch
     stasis tray
     stasis pause [for <duration> | until <time>]
@@ -221,6 +222,11 @@ still runs immediately.
     stasis report [today|week]
     stasis reload
     stasis stop
+
+`stasis blame` explains why the idle plan is not progressing. It names active
+manual/system pauses, matched applications and media, suspend-only blockers,
+and live D-Bus inhibit cookies or portal request handles. The `--json` form is
+a versioned snapshot for scripts.
 
 `stasis tray` runs an optional StatusNotifier tray frontend. It does not replace
 `stasis info --json`; Waybar and other status bars can keep using the JSON output

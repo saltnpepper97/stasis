@@ -129,6 +129,27 @@ pub async fn run(args: Args) -> Result<(), AnyError> {
             }
         }
 
+        Command::Blame { json } => {
+            let msg = if *json { "blame --json" } else { "blame" };
+
+            match crate::ipc::client::send_raw(msg).await {
+                Ok(resp) => {
+                    if !resp.is_empty() {
+                        println!("{resp}");
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    if *json {
+                        println!(r#"{{"error":"daemon not running"}}"#);
+                    } else {
+                        eprintln!("stasis: {e}");
+                    }
+                    Ok(())
+                }
+            }
+        }
+
         Command::Watch => match crate::ipc::client::watch().await {
             Ok(()) => Ok(()),
             Err(e) => {

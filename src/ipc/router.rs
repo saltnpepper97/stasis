@@ -71,6 +71,49 @@ pub async fn route_command(cmd: &str, tx: &mpsc::Sender<ManagerMsg>) -> String {
         };
     }
 
+    // ---------------- blame ----------------
+    if cmd == "blame" || cmd.starts_with("blame ") {
+        let as_json = cmd.split_whitespace().any(|t| t == "--json");
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        if tx
+            .send(ManagerMsg::GetBlame { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            return if as_json {
+                r#"{"error":"daemon not running"}"#.to_string()
+            } else {
+                "Stasis daemon not running".to_string()
+            };
+        }
+
+        return match timeout(IPC_REPLY_TIMEOUT, reply_rx).await {
+            Ok(Ok(snapshot)) => {
+                if as_json {
+                    serde_json::to_string(&snapshot)
+                        .unwrap_or_else(|_| r#"{"error":"json encode failed"}"#.to_string())
+                } else {
+                    snapshot.render_human()
+                }
+            }
+            Ok(Err(_)) => {
+                if as_json {
+                    r#"{"error":"no response from daemon"}"#.to_string()
+                } else {
+                    "No response from daemon".to_string()
+                }
+            }
+            Err(_) => {
+                if as_json {
+                    r#"{"error":"timed out waiting for daemon"}"#.to_string()
+                } else {
+                    "Timed out waiting for daemon".to_string()
+                }
+            }
+        };
+    }
+
     // ---------------- reload ----------------
     if cmd == "reload" {
         return crate::ipc::handlers::reload::handle_reload(tx).await;

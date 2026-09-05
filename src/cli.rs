@@ -68,6 +68,12 @@ pub enum Command {
         json: bool,
     },
 
+    #[command(about = "Explain what currently prevents idle progression")]
+    Blame {
+        #[arg(long)]
+        json: bool,
+    },
+
     #[command(about = "Stream state and profile changes as newline-delimited JSON")]
     Watch,
 

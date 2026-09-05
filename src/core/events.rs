@@ -1,6 +1,8 @@
 // Author: Dustin Pilgrim
 // License: GPL-3.0-only
 
+use crate::core::blame::DbusHold;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityKind {
     Any,
@@ -124,6 +126,24 @@ pub enum Event {
         suspend_count: u64,
         now_ms: u64,
     },
+    AppInhibitorSources {
+        sources: Vec<String>,
+        suspend_sources: Vec<String>,
+        now_ms: u64,
+    },
+    MediaInhibitorSources {
+        sources: Vec<String>,
+        suspend_sources: Vec<String>,
+        now_ms: u64,
+    },
+    DbusInhibitorsChanged {
+        holds: Vec<DbusHold>,
+        now_ms: u64,
+    },
+    BrowserSourceCaptureChanged {
+        active: bool,
+        now_ms: u64,
+    },
 }
 
 impl Event {
@@ -148,7 +168,11 @@ impl Event {
             | Event::PrepareForSleep { now_ms }
             | Event::ResumedFromSleep { now_ms }
             | Event::AppInhibitorCount { now_ms, .. }
-            | Event::MediaInhibitorCount { now_ms, .. } => *now_ms,
+            | Event::MediaInhibitorCount { now_ms, .. }
+            | Event::AppInhibitorSources { now_ms, .. }
+            | Event::MediaInhibitorSources { now_ms, .. }
+            | Event::DbusInhibitorsChanged { now_ms, .. } => *now_ms,
+            Event::BrowserSourceCaptureChanged { now_ms, .. } => *now_ms,
         }
     }
 }

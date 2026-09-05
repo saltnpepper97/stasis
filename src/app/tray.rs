@@ -41,7 +41,6 @@ struct TraySnapshot {
     #[allow(dead_code)]
     class: String,
     tooltip: String,
-    profile: Option<String>,
 }
 
 impl TraySnapshot {
@@ -52,23 +51,52 @@ impl TraySnapshot {
             alt: "not_running".to_string(),
             class: "not_running".to_string(),
             tooltip: format!("Stasis not running\n{message}"),
-            profile: None,
         }
     }
 
-    fn title(&self) -> String {
-        format!("Stasis: {}", self.text)
+    fn state_title(&self) -> String {
+        if self.alt == "manually_inhibited" {
+            "Stasis paused".to_string()
+        } else {
+            format!("Stasis: {}", self.text)
+        }
     }
 
     fn tooltip_description(&self) -> String {
-        let mut lines = Vec::new();
-        if let Some(profile) = &self.profile {
-            lines.push(format!("Profile: {profile}"));
+        self.tooltip
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("State:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TraySnapshot;
+
+    fn manual_snapshot() -> TraySnapshot {
+        TraySnapshot {
+            text: "manual".to_string(),
+            alt: "manually_inhibited".to_string(),
+            class: "manually_inhibited".to_string(),
+            tooltip: "Profile: default\nState: manual\nPaused: yes".to_string(),
         }
-        if !self.tooltip.trim().is_empty() {
-            lines.push(self.tooltip.trim().to_string());
-        }
-        lines.join("\n")
+    }
+
+    #[test]
+    fn manual_pause_has_requested_title() {
+        assert_eq!(manual_snapshot().state_title(), "Stasis paused");
+    }
+
+    #[test]
+    fn tooltip_does_not_repeat_state_from_title() {
+        let description = manual_snapshot().tooltip_description();
+        assert!(!description.contains("State:"));
+        assert_eq!(description.matches("Profile: default").count(), 1);
+        assert!(description.contains("Paused: yes"));
     }
 }
 
@@ -101,7 +129,8 @@ impl Tray for StasisTray {
     }
 
     fn title(&self) -> String {
-        self.snapshot.title()
+        // The first menu row below is the single state presentation.
+        "Stasis".to_string()
     }
 
     fn status(&self) -> ksni::Status {
@@ -118,7 +147,7 @@ impl Tray for StasisTray {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: self.snapshot.title(),
+            title: self.snapshot.state_title(),
             description: self.snapshot.tooltip_description(),
             ..Default::default()
         }
@@ -131,7 +160,7 @@ impl Tray for StasisTray {
 
         vec![
             StandardItem {
-                label: self.snapshot.title(),
+                label: self.snapshot.state_title(),
                 enabled: false,
                 ..Default::default()
             }

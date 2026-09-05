@@ -60,18 +60,22 @@ pub async fn run_app_inhibit(
                 svc.reconfigure(&rules.apps, &rules.suspend_apps);
 
                 let now_ms = crate::core::utils::now_ms();
-                if let Some(ev) = svc.poll_async(now_ms).await {
-                    if tx.send(ManagerMsg::Event(ev)).await.is_err() {
-                        return;
+                if let Some(events) = svc.poll_async(now_ms).await {
+                    for ev in events {
+                        if tx.send(ManagerMsg::Event(ev)).await.is_err() {
+                            return;
+                        }
                     }
                 }
             }
 
             _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {
                 let now_ms = crate::core::utils::now_ms();
-                if let Some(ev) = svc.poll_async(now_ms).await {
-                    if tx.send(ManagerMsg::Event(ev)).await.is_err() {
-                        return;
+                if let Some(events) = svc.poll_async(now_ms).await {
+                    for ev in events {
+                        if tx.send(ManagerMsg::Event(ev)).await.is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -89,7 +93,8 @@ pub struct AppInhibitService {
     last_poll_ms: u64,
 
     last_counts: Option<(u64, u64)>, // None => never polled yet
-    force_emit: bool,                // next poll must emit and do baseline logging
+    last_sources: (Vec<String>, Vec<String>),
+    force_emit: bool, // next poll must emit and do baseline logging
 
     /// Reused scratch buffer — `clear()`ed before every poll, never dropped.
     /// We `mem::take` it into `spawn_blocking` and restore it on return so we
@@ -132,6 +137,7 @@ impl AppInhibitService {
             poll_interval_ms: 1000,
             last_poll_ms: 0,
             last_counts: None,
+            last_sources: (Vec::new(), Vec::new()),
             force_emit: false,
             // Start small; the shrink logic below keeps it tight at steady state.
             seen: HashSet::with_capacity(8),
@@ -177,7 +183,7 @@ impl AppInhibitService {
     /// The `seen` scratch buffer is moved into the blocking task via `mem::take`
     /// and returned alongside the count so its backing allocation survives across
     /// polls — no HashSet is allocated on the steady-state hot path.
-    pub async fn poll_async(&mut self, now_ms: u64) -> Option<Event> {
+    pub async fn poll_async(&mut self, now_ms: u64) -> Option<Vec<Event>> {
         if now_ms < self.last_poll_ms.saturating_add(self.poll_interval_ms) {
             return None;
         }
@@ -355,10 +361,18 @@ impl AppInhibitService {
             self.suspend_seen.shrink_to(8);
         }
 
-        let first_poll = self.last_counts.is_none();
-        let changed = !first_poll && previous != counts;
+        let mut sources: Vec<_> = self.seen.iter().cloned().collect();
+        let mut suspend_sources: Vec<_> = self.suspend_seen.iter().cloned().collect();
+        sources.sort();
+        suspend_sources.sort();
 
-        if changed {
+        let first_poll = self.last_counts.is_none();
+        let counts_changed = !first_poll && previous != counts;
+        let sources_changed = !first_poll
+            && (self.last_sources.0 != sources || self.last_sources.1 != suspend_sources);
+        let changed = counts_changed || sources_changed;
+
+        if counts_changed {
             eventline::info!(
                 "app_inhibit: counts {:?} -> {:?} (backend={}, apps_len={}, suspend_apps_len={})",
                 previous,
@@ -367,6 +381,8 @@ impl AppInhibitService {
                 self.apps.len(),
                 self.suspend_apps.len()
             );
+        } else if sources_changed {
+            eventline::debug!("app_inhibit: matched application identities changed");
         } else if (first_poll || self.force_emit) && counts != (0, 0) {
             eventline::info!(
                 "app_inhibit: counts {:?} -> {:?} (backend={}, apps_len={}, suspend_apps_len={})",
@@ -380,12 +396,21 @@ impl AppInhibitService {
 
         if first_poll || changed || self.force_emit {
             self.last_counts = Some(counts);
+            self.last_sources = (sources.clone(), suspend_sources.clone());
             self.force_emit = false;
-            return Some(Event::AppInhibitorCount {
-                count: counts.0,
-                suspend_count: counts.1,
-                now_ms,
-            });
+
+            return Some(vec![
+                Event::AppInhibitorCount {
+                    count: counts.0,
+                    suspend_count: counts.1,
+                    now_ms,
+                },
+                Event::AppInhibitorSources {
+                    sources,
+                    suspend_sources,
+                    now_ms,
+                },
+            ]);
         }
 
         None
