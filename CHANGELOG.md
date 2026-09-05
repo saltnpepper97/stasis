@@ -5,6 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-05
+
 ### Added
 
 - `stasis blame` reports the current manual, system, application, media, suspend-only, and D-Bus blockers, with a stable `--json` form for tooling.
