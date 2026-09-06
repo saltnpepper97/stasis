@@ -5,6 +5,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-09-06
+
+### Fixed
+
+- Restored the disabled status row and separator in the tray menu so hosts such as Waybar show the current state without relying on a shell header. The shell title is now `Stasis`, while the menu and tooltip retain the state, including `Stasis paused (manually)`.
+
 ## [1.6.2] - 2026-09-06
 
 ### Fixed

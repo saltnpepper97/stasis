@@ -135,9 +135,8 @@ impl Tray for StasisTray {
     }
 
     fn title(&self) -> String {
-        // Shells such as Dank Material Shell render this as the menu header.
-        // Keep the state here, and do not repeat it as a menu item below.
-        self.snapshot.state_title()
+        // Some shells render this as a header; others show only the menu rows.
+        "Stasis".to_string()
     }
 
     fn status(&self) -> ksni::Status {
@@ -166,6 +165,13 @@ impl Tray for StasisTray {
         let daemon_running = self.snapshot.alt != "not_running";
 
         vec![
+            StandardItem {
+                label: self.snapshot.state_title(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
             StandardItem {
                 label: "Toggle Inhibit".to_string(),
                 enabled: daemon_running,
