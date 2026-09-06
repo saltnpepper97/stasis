@@ -1,6 +1,6 @@
 [package]
 name = "stasis"
-version = "1.6.1"
+version = "1.6.2"
 edition = "2024"
 authors = ["Dustin Pilgrim <dustin.pilgrim1997@gmail.com>"]
 description = "A modern Wayland idle manager that knows when to step back."

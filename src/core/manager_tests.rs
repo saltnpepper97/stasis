@@ -80,6 +80,153 @@ fn watch_event_reports_only_shell_facing_state() {
 }
 
 #[test]
+fn timed_pause_expiry_rearms_from_current_compositor_idle() {
+    let mut cfg = cfg_with_plan(vec![step(PlanStepKind::Dpms, 5, "dpms")]);
+    cfg.default.notify_on_unpause = true;
+    let mut mgr = Manager::new(cfg);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 1_000 })
+        .unwrap();
+    assert!(state.paused());
+    assert!(state.compositor_idle());
+
+    assert_eq!(
+        mgr.handle_event(
+            &mut state,
+            Event::PauseExpired {
+                now_ms: 2_000,
+                message: "Pause expired".to_string(),
+            },
+        )
+        .unwrap(),
+        vec![Action::Notify {
+            message: "Pause expired".to_string(),
+            icon: Some("stasis".to_string()),
+        }]
+    );
+
+    assert!(!state.paused());
+    assert!(state.compositor_idle());
+    assert!(!state.debounce_pending());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 6_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 7_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+}
+
+#[test]
+fn explicit_manual_resume_rearms_from_current_compositor_idle() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 5, "dpms")]));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 1_000 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::ManualResume { now_ms: 2_000 })
+        .unwrap();
+
+    assert!(!state.paused());
+    assert!(state.compositor_idle());
+    assert!(!state.debounce_pending());
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 7_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+}
+
+#[test]
+fn pause_release_waits_while_another_inhibitor_remains() {
+    for expires_automatically in [false, true] {
+        let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "dpms")]));
+        let mut state = State::new(0);
+        enter_idle(&mut mgr, &mut state, 0);
+
+        mgr.handle_event(&mut state, Event::ManualPause { now_ms: 100 })
+            .unwrap();
+        mgr.handle_event(
+            &mut state,
+            Event::AppInhibitorCount {
+                count: 1,
+                suspend_count: 0,
+                now_ms: 200,
+            },
+        )
+        .unwrap();
+
+        let release = if expires_automatically {
+            Event::PauseExpired {
+                now_ms: 300,
+                message: "Pause expired".to_string(),
+            }
+        } else {
+            Event::ManualResume { now_ms: 300 }
+        };
+        mgr.handle_event(&mut state, release).unwrap();
+
+        assert!(state.paused());
+        assert!(!state.manually_paused());
+        assert!(state.compositor_idle());
+        assert!(state.debounce_pending());
+        assert!(
+            mgr.handle_event(&mut state, Event::Tick { now_ms: 10_000 })
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn pause_expiry_after_compositor_resume_requires_a_fresh_idle_edge() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 5, "dpms")]));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 1_000 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::CompositorResumed { now_ms: 1_500 })
+        .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::PauseExpired {
+            now_ms: 2_000,
+            message: "Pause expired".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(!state.paused());
+    assert!(!state.compositor_idle());
+    assert!(state.debounce_pending());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 20_000 })
+            .unwrap()
+            .is_empty()
+    );
+
+    enter_idle(&mut mgr, &mut state, 21_000);
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 26_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".to_string()
+        }]
+    );
+}
+
+#[test]
 fn blame_snapshot_reports_named_sources_and_live_dbus_metadata() {
     let mut mgr = Manager::new(cfg_with_plan(vec![]));
     let mut state = State::new(0);

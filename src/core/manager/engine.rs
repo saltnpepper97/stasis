@@ -83,10 +83,7 @@ impl Manager {
 
                 // Browser activity may have masked a real compositor-idled edge.
                 // Resume promptly only when that verified idle state is still current.
-                if state.compositor_idle() && state.debounce_pending() && !state.paused() {
-                    Self::begin_idle_timing(state, now_ms);
-                    self.refresh_timing_holds(state, &cfg, now_ms);
-                }
+                self.begin_idle_from_verified_observation(state, &cfg, now_ms);
             }
 
             Event::ManualPause { .. } => {
@@ -95,24 +92,22 @@ impl Manager {
                 }
                 state.set_manually_paused(true);
                 self.refresh_timing_holds(state, &cfg, now_ms);
+                eventline::info!("manual pause started");
             }
 
             Event::ManualResume { .. } => {
                 if !state.manually_paused() {
                     return Err(Error::InvalidState(StateError::NotPaused));
                 }
-                state.set_manually_paused(false);
-
-                self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
+                self.release_manual_pause(state, &cfg, now_ms, &mut out);
             }
 
             // notify_on_unpause should ONLY fire for auto-resume from
             // `stasis pause for/until` when the pause expires internally.
             Event::PauseExpired { message, .. } => {
                 if state.manually_paused() {
-                    state.set_manually_paused(false);
-
-                    self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
+                    self.release_manual_pause(state, &cfg, now_ms, &mut out);
+                    eventline::info!("timed pause expired; manual pause released");
 
                     if cfg.notify_on_unpause {
                         out.push(Action::Notify {
@@ -476,6 +471,34 @@ impl Manager {
         state.set_step_base_ms(now_ms);
         state.set_pre_action_notify_sent(false);
         state.set_pre_action_notify_ms(0);
+    }
+
+    fn release_manual_pause(
+        &mut self,
+        state: &mut State,
+        cfg: &Config,
+        now_ms: u64,
+        out: &mut Vec<Action>,
+    ) {
+        // A pause is not physical input. Preserve the compositor's current
+        // verified observation across the activity-like reset used for resume
+        // commands, then reuse it only if no other blocker remains.
+        let compositor_idle = state.compositor_idle();
+        state.set_manually_paused(false);
+        self.handle_activity_like_event(state, cfg, now_ms, out);
+        state.set_compositor_idle(compositor_idle);
+        self.begin_idle_from_verified_observation(state, cfg, now_ms);
+    }
+
+    fn begin_idle_from_verified_observation(&self, state: &mut State, cfg: &Config, now_ms: u64) {
+        if state.compositor_idle()
+            && state.debounce_pending()
+            && !state.paused()
+            && !state.browser_activity_active(now_ms)
+        {
+            Self::begin_idle_timing(state, now_ms);
+            self.refresh_timing_holds(state, cfg, now_ms);
+        }
     }
 
     fn handle_activity_like_event(
