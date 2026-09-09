@@ -573,8 +573,8 @@ impl HalleyBackend {
             .map_err(|e| format!("halleyctl json parse failed: {e}"))?;
 
         let outputs = v
-            .get("outputs")
-            .and_then(|x| x.as_array())
+            .as_array()
+            .or_else(|| v.get("outputs").and_then(|x| x.as_array()))
             .ok_or_else(|| "halleyctl json: expected outputs array".to_string())?;
 
         for output in outputs {
@@ -863,6 +863,28 @@ mod tests {
         assert_eq!(suspend_seen.len(), 2);
         assert!(suspend_seen.contains("firefox"));
         assert!(suspend_seen.contains("kitty"));
+    }
+
+    #[test]
+    fn halley_current_array_matches_steam_game() {
+        let apps = vec![Pattern::Regex(regex::Regex::new(r"steam_app_.*").unwrap())];
+        let mut seen = HashSet::new();
+        let mut suspend_seen = HashSet::new();
+        HalleyBackend::count_json_into(
+            &apps,
+            &[],
+            &mut seen,
+            &mut suspend_seen,
+            br#"[
+                {"output":"DP-1","nodes":[
+                    {"app_id":"steam_app_3748520","title":"Silas","visible":true}
+                ]},
+                {"output":"DP-2","nodes":[{"app_id":"steam","title":"Steam"}]}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(seen, HashSet::from(["steam_app_3748520".to_string()]));
+        assert!(suspend_seen.is_empty());
     }
 
     #[test]

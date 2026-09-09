@@ -5,6 +5,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- App inhibition on Halley now accepts its current window-list JSON array as well as the legacy wrapped format, restoring game detection for rules such as `steam_app_.*`.
+
 ## [1.6.3] - 2026-09-06
 
 ### Fixed
