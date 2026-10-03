@@ -5,6 +5,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Combined the tray's Pause and Resume entries into one action that follows the manual pause state.
+
 ### Fixed
 
 - App inhibition on Halley now accepts its current window-list JSON array as well as the legacy wrapped format, restoring game detection for rules such as `steam_app_.*`.
