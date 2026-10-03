@@ -44,6 +44,15 @@ struct TraySnapshot {
 }
 
 impl TraySnapshot {
+    fn manually_paused(&self) -> bool {
+        // The locked status can mask a manual pause in `alt`.
+        self.alt == "manually_inhibited"
+            || self
+                .tooltip
+                .lines()
+                .any(|line| line.trim() == "Manual Pause: yes")
+    }
+
     fn not_running(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -80,7 +89,9 @@ impl TraySnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::TraySnapshot;
+    use super::{StasisTray, TrayCommand, TraySnapshot};
+    use ksni::Tray;
+    use tokio::sync::mpsc;
 
     fn manual_snapshot() -> TraySnapshot {
         TraySnapshot {
@@ -103,6 +114,48 @@ mod tests {
         assert!(!description.contains("Manual Pause:"));
         assert!(!description.contains("Paused:"));
         assert_eq!(description.matches("Profile: default").count(), 1);
+    }
+
+    #[test]
+    fn combined_pause_resume_action_tracks_manual_pause() {
+        for (alt, manual_pause) in [
+            ("idle_active", false),
+            ("idle_inhibited", false),
+            ("manually_inhibited", true),
+            ("locked", true),
+            ("locked", false),
+            ("not_running", false),
+        ] {
+            let (commands, mut received) = mpsc::unbounded_channel();
+            let mut tray = StasisTray {
+                snapshot: TraySnapshot {
+                    alt: alt.to_string(),
+                    tooltip: format!("Manual Pause: {}", if manual_pause { "yes" } else { "no" }),
+                    ..manual_snapshot()
+                },
+                commands,
+            };
+            let mut actions = tray.menu().into_iter().filter_map(|item| match item {
+                ksni::MenuItem::Standard(item)
+                    if item.label == "Pause" || item.label == "Resume" =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            });
+            let action = actions.next().expect("pause/resume action exists");
+            assert!(actions.next().is_none(), "only one pause/resume action");
+            assert_eq!(action.label, if manual_pause { "Resume" } else { "Pause" });
+            assert_eq!(action.enabled, alt != "not_running");
+            if action.enabled {
+                (action.activate)(&mut tray);
+                match received.try_recv().expect("action sends a command") {
+                    TrayCommand::Resume => assert!(manual_pause),
+                    TrayCommand::Pause => assert!(!manual_pause),
+                    command => panic!("unexpected command: {command:?}"),
+                }
+            }
+        }
     }
 }
 
@@ -163,6 +216,7 @@ impl Tray for StasisTray {
         use ksni::menu::*;
 
         let daemon_running = self.snapshot.alt != "not_running";
+        let manually_paused = self.snapshot.manually_paused();
 
         vec![
             StandardItem {
@@ -180,16 +234,15 @@ impl Tray for StasisTray {
             }
             .into(),
             StandardItem {
-                label: "Pause".to_string(),
+                label: if manually_paused { "Resume" } else { "Pause" }.to_string(),
                 enabled: daemon_running,
-                activate: Box::new(|this: &mut Self| this.send(TrayCommand::Pause)),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Resume".to_string(),
-                enabled: daemon_running,
-                activate: Box::new(|this: &mut Self| this.send(TrayCommand::Resume)),
+                activate: Box::new(move |this: &mut Self| {
+                    this.send(if manually_paused {
+                        TrayCommand::Resume
+                    } else {
+                        TrayCommand::Pause
+                    });
+                }),
                 ..Default::default()
             }
             .into(),
