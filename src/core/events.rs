@@ -45,6 +45,11 @@ pub enum Event {
         now_ms: u64,
     },
 
+    GamesChanged {
+        info: crate::core::info::GamesInfo,
+        now_ms: u64,
+    },
+
     /// Browser-reported user activity pulse (e.g. extension/native host).
     /// This should behave like input activity for idle timing, but does not
     /// contribute to inhibitor counters.
@@ -164,6 +169,7 @@ impl Event {
             Event::Tick { now_ms }
             | Event::UserActivity { now_ms, .. }
             | Event::GamepadDevicesChanged { now_ms, .. }
+            | Event::GamesChanged { now_ms, .. }
             | Event::BrowserActivity { now_ms }
             | Event::BrowserInactive { now_ms }
             | Event::CompositorIdled { now_ms }

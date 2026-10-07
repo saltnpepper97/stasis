@@ -189,6 +189,8 @@ impl Daemon {
             inhibit_apps: effective.inhibit_apps.clone(),
             suspend_inhibit_apps: effective.suspend_inhibit_apps.clone(),
             monitor_gamepad: effective.monitor_gamepad,
+            monitor_games: effective.monitor_games,
+            game_blacklist: effective.game_blacklist.clone(),
             monitor_media: effective.monitor_media,
             ignore_remote_media: effective.ignore_remote_media,
             media_blacklist: effective.media_blacklist.clone(),

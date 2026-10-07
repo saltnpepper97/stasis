@@ -104,6 +104,17 @@ impl Daemon {
             shutdown.clone(),
         ));
 
+        let (game_rules_tx, game_rules_rx) = watch::channel(crate::services::games::GameRules {
+            epoch: self.inhibit_epoch,
+            monitor_games: effective.monitor_games,
+            blacklist: effective.game_blacklist.clone(),
+        });
+        tokio::spawn(crate::services::games::run_games(
+            tx.clone(),
+            game_rules_rx,
+            shutdown.clone(),
+        ));
+
         let (app_rules_tx, app_rules_rx) = watch::channel(crate::services::app_inhibit::AppRules {
             epoch: self.inhibit_epoch,
             apps: self.inhibit_apps.clone(),
@@ -197,8 +208,11 @@ impl Daemon {
                             }
                         }
 
-                        ManagerMsg::UpdateInhibitRules { epoch, inhibit_apps, suspend_inhibit_apps, monitor_gamepad, monitor_media, ignore_remote_media, media_blacklist, suspend_inhibit_media } => {
+                        ManagerMsg::UpdateInhibitRules { epoch, inhibit_apps, suspend_inhibit_apps, monitor_gamepad, monitor_games, game_blacklist, monitor_media, ignore_remote_media, media_blacklist, suspend_inhibit_media } => {
                             let _ = gamepad_rules_tx.send(monitor_gamepad);
+                            let _ = game_rules_tx.send(crate::services::games::GameRules {
+                                epoch, monitor_games, blacklist: game_blacklist,
+                            });
                             self.inhibit_epoch = epoch;
                             self.inhibit_apps = inhibit_apps.clone();
                             self.suspend_inhibit_apps = suspend_inhibit_apps.clone();

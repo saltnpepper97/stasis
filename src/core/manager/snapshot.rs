@@ -37,6 +37,7 @@ impl Manager {
                 cfg_opt.as_ref().is_some_and(|cfg| cfg.monitor_gamepad),
                 now_ms,
             ),
+            games: state.games().clone(),
             login1_idle_inhibitors,
         };
 
@@ -84,6 +85,15 @@ impl Manager {
             media_inhibitors: BlameCategory::new(
                 state.media_inhibitor_count(),
                 state.media_inhibitor_sources(),
+            ),
+            game_inhibitors: BlameCategory::new(
+                state.games().running.len() as u64,
+                &state
+                    .games()
+                    .running
+                    .iter()
+                    .map(|game| game.title.clone())
+                    .collect::<Vec<_>>(),
             ),
             suspend_app_inhibitors: BlameCategory::new(
                 state.suspend_app_inhibitor_count(),

@@ -36,6 +36,7 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
     out.push_str(&format!("Profile: {}\n", profile_label(state)));
     out.push_str(&format!("Plan Source: {:?}\n", state.plan_source()));
     out.push_str(&render_gamepad(state, cfg_opt, now_ms));
+    out.push_str(&render_games(state));
 
     let paused_reason = if state.is_locked() {
         Some("locked")
@@ -107,6 +108,7 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     t.push_str(&format!("Profile: {}\n", profile_label(state)));
     t.push_str(&format!("Plan Source: {:?}\n", state.plan_source()));
     t.push_str(&render_gamepad(state, cfg_opt, now_ms));
+    t.push_str(&render_games(state));
 
     if state.is_locked() {
         t.push_str("State: locked\n");
@@ -161,6 +163,40 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     t
 }
 
+fn render_games(state: &State) -> String {
+    let info = state.games();
+    let running = info
+        .running
+        .iter()
+        .map(|game| game.title.as_str())
+        .collect::<Vec<_>>();
+    let mut text = format!(
+        "Game Catalogue: {} entries\nGames Inhibiting: {}\n",
+        info.catalogue_entries,
+        running.len()
+    );
+    if !running.is_empty() {
+        text.push_str(&format!("Running Games: {}\n", running.join(", ")));
+    }
+    if !info.ignored.is_empty() {
+        text.push_str(&format!(
+            "Games Ignored: {}\n",
+            info.ignored
+                .iter()
+                .map(|game| game.title.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !info.errors.is_empty() {
+        text.push_str(&format!(
+            "Game Detection Errors: {}\n",
+            info.errors.join("; ")
+        ));
+    }
+    text
+}
+
 fn render_gamepad(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String {
     let info = state.gamepad_info(cfg_opt.is_some_and(|cfg| cfg.monitor_gamepad), now_ms);
     let devices = if info.devices.is_empty() {
@@ -198,6 +234,15 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
     ));
 
     out.push_str(&format!("MonitorGamepad: {}\n", yesno(cfg.monitor_gamepad)));
+    out.push_str(&format!("MonitorGames: {}\n", yesno(cfg.monitor_games)));
+    out.push_str(&format!(
+        "GameBlacklist: {}\n",
+        if cfg.game_blacklist.is_empty() {
+            "none".to_string()
+        } else {
+            join_patterns(&cfg.game_blacklist)
+        }
+    ));
     out.push_str(&format!("MonitorMedia: {}\n", yesno(cfg.monitor_media)));
     out.push_str(&format!(
         "IgnoreRemoteMedia: {}\n",

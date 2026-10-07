@@ -30,6 +30,7 @@ eventline = "0.8.0"
 futures = "0.3.32"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 ksni = "0.3.4"
+lib_game_detector = { version = "=0.0.39", default-features = false, features = ["bundled_sqlite"] }
 procfs = { version = "0.18.0", default-features = false }
 regex = "1.12.3"
 rune-cfg = "0.5.0"

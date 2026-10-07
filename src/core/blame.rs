@@ -75,6 +75,7 @@ pub struct BlameSnapshot {
     pub browser_source_capture: bool,
     pub app_inhibitors: BlameCategory,
     pub media_inhibitors: BlameCategory,
+    pub game_inhibitors: BlameCategory,
     pub suspend_app_inhibitors: BlameCategory,
     pub suspend_media_inhibitors: BlameCategory,
     pub dbus_holds: Vec<DbusHold>,
@@ -93,6 +94,7 @@ impl BlameSnapshot {
         );
         push_category(&mut out, "Applications", &self.app_inhibitors);
         push_category(&mut out, "Media", &self.media_inhibitors);
+        push_category(&mut out, "Games", &self.game_inhibitors);
         push_category(
             &mut out,
             "Suspend-only applications",
@@ -227,6 +229,7 @@ mod tests {
             browser_source_capture: false,
             app_inhibitors: BlameCategory::new(0, &[]),
             media_inhibitors: BlameCategory::new(0, &[]),
+            game_inhibitors: BlameCategory::new(0, &[]),
             suspend_app_inhibitors: BlameCategory::new(0, &[]),
             suspend_media_inhibitors: BlameCategory::new(0, &[]),
             dbus_holds: vec![DbusHold {

@@ -4,7 +4,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use crate::core::info::GamepadInfo;
+use crate::core::info::{GamepadInfo, GamesInfo};
 use image::GenericImageView;
 use ksni::{Tray, TrayMethods};
 use serde::Deserialize;
@@ -44,6 +44,8 @@ struct TraySnapshot {
     tooltip: String,
     #[serde(default)]
     gamepad: Option<GamepadInfo>,
+    #[serde(default)]
+    games: Option<GamesInfo>,
 }
 
 impl TraySnapshot {
@@ -64,6 +66,7 @@ impl TraySnapshot {
             class: "not_running".to_string(),
             tooltip: format!("Stasis not running\n{message}"),
             gamepad: None,
+            games: None,
         }
     }
 
@@ -90,6 +93,29 @@ impl TraySnapshot {
                 "waiting for input"
             };
             format!("Gamepad: {} ({input})", info.devices.join(", "))
+        }
+    }
+
+    fn games_label(&self) -> String {
+        let Some(info) = &self.games else {
+            return "Games: status unavailable".into();
+        };
+        if !info.monitoring {
+            "Games: monitoring disabled".into()
+        } else if info.running.is_empty() {
+            format!(
+                "Games: none running ({} catalogue entries)",
+                info.catalogue_entries
+            )
+        } else {
+            format!(
+                "Games: {}",
+                info.running
+                    .iter()
+                    .map(|game| game.title.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     }
 
@@ -122,6 +148,7 @@ mod tests {
             class: "manually_inhibited".to_string(),
             tooltip: "Profile: default\nState: manual\nPaused: yes".to_string(),
             gamepad: None,
+            games: None,
         }
     }
 
@@ -285,6 +312,12 @@ impl Tray for StasisTray {
             .into(),
             StandardItem {
                 label: self.snapshot.gamepad_label(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: self.snapshot.games_label(),
                 enabled: false,
                 ..Default::default()
             }

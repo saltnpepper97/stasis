@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::core::blame::{DbusHold, Login1IdleHold};
 use crate::core::config::{PlanSource, PlanStep, PlanStepKind};
 use crate::core::events::PowerState;
-use crate::core::info::GamepadInfo;
+use crate::core::info::{GamepadInfo, GamesInfo};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OneShotKey {
@@ -43,6 +43,7 @@ pub struct State {
     browser_source_capture_active: bool,
     gamepad_devices: Vec<String>,
     last_gamepad_activity_ms: Option<u64>,
+    games: GamesInfo,
 
     // Pause policy
     manually_paused: bool,
@@ -136,6 +137,7 @@ impl State {
             browser_source_capture_active: false,
             gamepad_devices: Vec::new(),
             last_gamepad_activity_ms: None,
+            games: GamesInfo::default(),
             manually_paused: false,
             preparing_for_sleep: false,
             lid_closed: false,
@@ -191,6 +193,22 @@ impl State {
         if self.gamepad_devices.is_empty() {
             self.last_gamepad_activity_ms = None;
         }
+    }
+
+    pub fn games(&self) -> &GamesInfo {
+        &self.games
+    }
+
+    pub fn set_games(&mut self, info: GamesInfo) {
+        self.games = info;
+    }
+
+    pub fn apply_game_rules(
+        &mut self,
+        monitoring: bool,
+        blacklist: &[crate::core::config::Pattern],
+    ) {
+        self.games.apply_rules(monitoring, blacklist);
     }
 
     pub fn note_gamepad_activity(&mut self, now_ms: u64) {
@@ -444,7 +462,9 @@ impl State {
     }
 
     pub fn inhibitors_active(&self) -> bool {
-        self.app_inhibitor_count > 0 || self.media_inhibitor_count > 0
+        self.app_inhibitor_count > 0
+            || self.media_inhibitor_count > 0
+            || !self.games.running.is_empty()
     }
 
     pub fn suspend_inhibitors_active(&self) -> bool {
