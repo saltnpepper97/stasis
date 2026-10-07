@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Automatic running-game inhibition using `lib_game_detector`, enabled by `monitor_games true` by default. Installed games are discovered from supported launchers and matched against game processes, Wine/Proton identities, Minecraft instance arguments, and Steam app windows without per-game name lists.
+- `game_blacklist [ ... ]` ignores selected detected titles, IDs, sources, or installation paths using the same string/regex syntax as the media blacklist. Defaults and profiles support the settings, and reload updates them without restarting Stasis.
+- `extra_games [ ... ]` supplements discovery with executable names, app IDs, installation paths, or regexes for games installed outside a supported launcher or missed by metadata detection. The blacklist applies to these additions too, and `monitor_games false` disables both sources.
+- Game catalogue size, active/ignored games, and detection errors are exposed through `stasis info` and JSON; the tray displays running games and `stasis blame` reports game holds separately.
+
 - `pause_on_lid_close false` allows the configured idle plan to run while the lid is closed, starting a fresh countdown on closure and cancelling it on reopening. The default remains `true`; profiles, generated configs, and compatibility backfill include the setting ([#86](https://github.com/saltnpepper97/stasis/issues/86)).
 
 - Linux gamepad activity detection (`monitor_gamepad true` by default), including hotplug, buttons, D-pad, sticks, and triggers. Held controls keep the session active; neutral drift is filtered. Idle timing resumes when controls are released, without requiring per-game rules or a new compositor idle event. Requires read access to the controller's input device.
@@ -14,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The tray, `stasis info`, and its JSON output report monitored controller names and recent input, including the last input timestamp. Controller activity works outside games as well as during play.
 
 ### Changed
+
+- Generated configs and examples use automatic game detection instead of broad Steam/Windows executable rules. Existing user application rules remain explicit independent holds; removing a matching legacy game rule is necessary for a game blacklist entry to release that hold.
+- Bundled SQLite supports launcher metadata discovery without adding a system SQLite runtime dependency. Distribution notes and the AGPL license text accompany the new dependency.
 
 - Combined the tray's Pause and Resume entries into one action that follows the manual pause state.
 

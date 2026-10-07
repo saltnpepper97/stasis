@@ -1,4 +1,4 @@
-.TH STASIS 5 "February 2026" "stasis" "File Formats"
+.TH STASIS 5 "October 2026" "stasis" "File Formats"
 .SH NAME
 stasis \- configuration format for the Stasis idle manager
 .SH SYNOPSIS
@@ -91,6 +91,65 @@ If true, non-browser media playback can inhibit idle evaluation.
 .PP
 This setting is separate from D-Bus inhibit monitoring. Browser media inhibit
 is controlled by \fBenable_dbus_inhibit\fR.
+
+.TP
+.B monitor_games true|false
+Automatically pauses the full idle plan while a detected game runs (default
+true). Uses lib_game_detector to discover installed titles from Steam,
+Heroic, Lutris, Bottles, Prism/ATLauncher, Itch, and Faugus. Discovery alone
+does not inhibit idle and never launches a game. The catalogue refreshes every
+60 seconds and on reload/profile changes; runtime observations are polled
+once per second.
+.PP
+Matches game executable/script paths, Proton/Wine game identities, Minecraft
+instance arguments, and Steam app windows. Generic launcher/runtime helpers
+are excluded. Halley, Hyprland, and Niri supply a Steam app-ID window fallback
+when metadata is unavailable. Unsupported sources, missing paths, or ambiguous
+shared directories can still require an explicit application rule.
+.PP
+May be overridden by profiles. Reload updates the setting without a restart.
+The tray and \fBstasis info\fR show game status; the JSON \fBgames\fR object
+includes monitoring, catalogue_entries, running, ignored, and errors.
+\fBstasis blame\fR reports game holds separately.
+
+.TP
+.B game_blacklist [ \fIPATTERN...\fR ]
+Patterns to ignore for automatic game inhibition (default empty). Uses the
+same syntax as media_blacklist: lowercase-normalized substring literals or
+regular expressions. Matches each game's title, identity, source, or install
+directory. Steam identities support \fBsteam:440\fR and \fBsteam_app_440\fR.
+If metadata is missing, the Steam fallback uses the title \fBSteam app <id>\fR;
+blacklist it by ID.
+.PP
+Profiles replace the list; an empty list clears inherited exclusions. Reload
+applies changes to running observations. Launcher-registered software such as
+Aseprite can also be excluded here.
+.PP
+This filters only automatic game holds. Explicit inhibit_apps rules, media,
+D-Bus, compositor inhibitors, and controller input remain independent. Remove
+old broad game rules such as \fBr"steam_app_.*"\fR if the blacklist should
+control that game's automatic hold.
+
+.TP
+.B extra_games [ \fIPATTERN...\fR ]
+Supplement automatic discovery with games the catalogue misses (default empty).
+Accepts exact executable names or compositor app IDs, absolute installation
+paths, and regexes matched against executable names/paths or app IDs.
+Names are case-insensitive; omitting .exe also matches a Windows executable.
+A directory matches game executable/script paths or Minecraft instance
+arguments within that directory. Generic Wine/Java hosts and runtime helpers
+alone do not count. For example:
+.nf
+  extra_games ["jazz2.exe" "/games/GOG/My Game" r"^my_game$"]
+.fi
+.PP
+Games installed through supported launchers such as Heroic GOG may already be
+detected automatically. Additional observations use the source \fBExtra games\fR
+and show their executable/app identity or configured directory name.
+.PP
+The game blacklist applies to automatic and extra observations alike;
+monitor_games false disables both. Profiles replace the list or clear it with
+an empty list. Reload applies additions/removals without restarting Stasis.
 
 .TP
 .B ignore_remote_media true|false
@@ -355,7 +414,7 @@ advance during the paused interval.
 
 .SH PATTERNS
 Lists such as \fBinhibit_apps\fR, \fBsuspend_inhibit_apps\fR,
-\fBsuspend_inhibit_media\fR, and \fBmedia_blacklist\fR accept:
+\fBsuspend_inhibit_media\fR, \fBmedia_blacklist\fR, and \fBgame_blacklist\fR accept:
 
 .TP
 .B Literal strings
@@ -373,6 +432,9 @@ default:
   enable_loginctl_integration true
   enable_dbus_inhibit true
   monitor_gamepad true
+  monitor_games true
+  game_blacklist [ ]
+  extra_games [ ]
   monitor_media true
   suspend_inhibit_media ["spotify" "mpd"]
   suspend_inhibit_apps ["handbrake"]
@@ -401,4 +463,5 @@ end
 .SH AUTHOR
 Dustin Pilgrim
 .SH LICENSE
-GPL-3.0-only
+Stasis source: GPL-3.0-only. Compiled program also includes lib_game_detector
+under AGPL-3.0-only; see THIRD_PARTY.md for combined-work distribution terms.
