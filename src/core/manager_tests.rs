@@ -81,6 +81,7 @@ fn observed_games() -> crate::core::info::GamesInfo {
             source: "Steam".into(),
             path_game_dir: Some("/games/test".into()),
             pids: vec![42],
+            extra_rule: None,
         }],
         ..Default::default()
     }
@@ -209,6 +210,42 @@ fn disabled_game_monitoring_rejects_queued_holds_and_explicit_app_rules_still_ap
     )
     .unwrap();
     assert!(state.paused());
+}
+
+#[test]
+fn removing_an_extra_game_rule_releases_the_hold_and_rejects_queued_observations() {
+    let mut config = cfg_with_plan(vec![step(PlanStepKind::Dpms, 10, "off")]);
+    config.default.extra_games = vec![Pattern::Literal("gog-game.exe".into())];
+    let mut mgr = Manager::new(config.clone());
+    let mut state = State::new(0);
+    let mut info = observed_games();
+    info.running[0].id = "extra:gog-game.exe".into();
+    info.running[0].source = "Extra games".into();
+    info.running[0].title = "gog-game.exe".into();
+    info.running[0].extra_rule = Some("gog-game.exe".into());
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: info.clone(),
+            now_ms: 100,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    config.default.game_blacklist = vec![Pattern::Literal("gog-game".into())];
+    mgr.set_config(config.clone());
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 200 })
+        .unwrap();
+    assert!(!state.paused());
+    assert_eq!(state.games().ignored.len(), 1);
+    config.default.game_blacklist.clear();
+    config.default.extra_games.clear();
+    mgr.set_config(config);
+    mgr.handle_event(&mut state, Event::GamesChanged { info, now_ms: 300 })
+        .unwrap();
+    assert!(!state.paused());
+    assert!(state.games().running.is_empty());
+    assert!(state.games().ignored.is_empty());
 }
 
 #[test]

@@ -207,7 +207,16 @@ impl State {
         &mut self,
         monitoring: bool,
         blacklist: &[crate::core::config::Pattern],
+        extra_games: &[crate::core::config::Pattern],
     ) {
+        // Reject stale observations after an additional rule is removed.
+        let keep = |game: &crate::core::info::DetectedGame| {
+            game.extra_rule
+                .as_ref()
+                .is_none_or(|rule| extra_games.iter().any(|pattern| pattern.render() == *rule))
+        };
+        self.games.running.retain(keep);
+        self.games.ignored.retain(keep);
         self.games.apply_rules(monitoring, blacklist);
     }
 

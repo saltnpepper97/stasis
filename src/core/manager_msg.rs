@@ -48,6 +48,7 @@ pub enum ManagerMsg {
         monitor_gamepad: bool,
         monitor_games: bool,
         game_blacklist: Vec<Pattern>,
+        extra_games: Vec<Pattern>,
         monitor_media: bool,
         ignore_remote_media: bool,
         media_blacklist: Vec<Pattern>,

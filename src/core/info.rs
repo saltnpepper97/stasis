@@ -13,6 +13,8 @@ pub struct DetectedGame {
     pub source: String,
     pub path_game_dir: Option<String>,
     pub pids: Vec<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_rule: Option<String>,
 }
 
 impl DetectedGame {
@@ -27,6 +29,7 @@ impl DetectedGame {
             Some(self.source.as_str()),
             self.path_game_dir.as_deref(),
             steam_app_id.as_deref(),
+            self.extra_rule.as_deref(),
         ]
         .into_iter()
         .flatten()

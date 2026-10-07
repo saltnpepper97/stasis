@@ -151,6 +151,8 @@ pub struct Config {
     pub monitor_games: bool,
     /// Detected game identities to ignore (same pattern syntax as media_blacklist).
     pub game_blacklist: Vec<Pattern>,
+    /// Supplemental executable names, app IDs, directories, or regexes for games.
+    pub extra_games: Vec<Pattern>,
     pub monitor_media: bool,
     pub ignore_remote_media: bool,
 
@@ -213,6 +215,7 @@ impl Config {
             monitor_gamepad: true,
             monitor_games: true,
             game_blacklist: Vec::new(),
+            extra_games: Vec::new(),
             monitor_media: false,
             ignore_remote_media: false,
             media_blacklist: Vec::new(),
@@ -398,6 +401,7 @@ pub struct PartialConfig {
     pub monitor_gamepad: Option<bool>,
     pub monitor_games: Option<bool>,
     pub game_blacklist: Option<Vec<Pattern>>,
+    pub extra_games: Option<Vec<Pattern>>,
     pub monitor_media: Option<bool>,
     pub ignore_remote_media: Option<bool>,
 
@@ -485,6 +489,9 @@ impl PartialConfig {
         }
         if let Some(v) = &self.game_blacklist {
             base.game_blacklist = v.clone();
+        }
+        if let Some(v) = &self.extra_games {
+            base.extra_games = v.clone();
         }
         if let Some(v) = self.monitor_media {
             base.monitor_media = v;

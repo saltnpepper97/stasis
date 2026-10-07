@@ -97,6 +97,8 @@ default:
   # Automatically pause idle while games are running; no per-game rules needed.
   monitor_games true
   game_blacklist [ ]
+  # Optional fallback: executable names, app IDs, installation paths, or regexes.
+  extra_games [ ]
 
   # Keep the historical lid pause; false starts the plan when the lid closes.
   pause_on_lid_close true
@@ -276,6 +278,8 @@ default:
   # Automatically pause idle while games are running; no per-game rules needed.
   monitor_games true
   game_blacklist [ ]
+  # Optional fallback: executable names, app IDs, installation paths, or regexes.
+  extra_games [ ]
 
   # Keep the historical lid pause; false starts the plan when the lid closes.
   pause_on_lid_close true

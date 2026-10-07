@@ -148,6 +148,7 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
             cfg.monitor_gamepad = opt_bool(rc, "default.monitor_gamepad")?.unwrap_or(true);
             cfg.monitor_games = opt_bool(rc, "default.monitor_games")?.unwrap_or(true);
             cfg.game_blacklist = get_vec_pattern(rc, "default.game_blacklist", Vec::new())?;
+            cfg.extra_games = get_vec_pattern(rc, "default.extra_games", Vec::new())?;
             cfg.monitor_media = rc.get_or("default.monitor_media", false);
             cfg.ignore_remote_media = rc.get_or("default.ignore_remote_media", false);
             // allow strings OR /regex/ entries (keep compiled regex)
@@ -249,6 +250,7 @@ fn parse_plan_block(
                 | "monitor_gamepad"
                 | "monitor_games"
                 | "game_blacklist"
+                | "extra_games"
                 | "ignore_remote_media"
                 | "media_blacklist"
                 | "suspend_inhibit_media"
@@ -424,6 +426,7 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
         pc.monitor_gamepad = opt_bool(rc, format!("{name}.monitor_gamepad"))?;
         pc.monitor_games = opt_bool(rc, format!("{name}.monitor_games"))?;
         pc.game_blacklist = opt_vec_pattern(rc, &format!("{name}.game_blacklist"))?;
+        pc.extra_games = opt_vec_pattern(rc, &format!("{name}.extra_games"))?;
         pc.monitor_media = opt_bool(rc, format!("{name}.monitor_media"))?;
         pc.ignore_remote_media = opt_bool(rc, format!("{name}.ignore_remote_media"))?;
         pc.media_blacklist = opt_vec_pattern(rc, &format!("{name}.media_blacklist"))?;
@@ -715,6 +718,7 @@ fn log_config_debug(cfg_file: &ConfigFile) {
     eventline::debug!("  monitor_gamepad = {:?}", cfg.monitor_gamepad);
     eventline::debug!("  monitor_games = {}", cfg.monitor_games);
     eventline::debug!("  game_blacklist = {:?}", cfg.game_blacklist);
+    eventline::debug!("  extra_games = {:?}", cfg.extra_games);
     eventline::debug!("  monitor_media = {:?}", cfg.monitor_media);
     eventline::debug!("  ignore_remote_media = {:?}", cfg.ignore_remote_media);
     eventline::debug!("  media_blacklist = {:?}", cfg.media_blacklist);
@@ -851,10 +855,12 @@ mod tests {
         let default = parse("default:\nend\n").unwrap();
         assert!(default.default.monitor_games);
         assert!(default.default.game_blacklist.is_empty());
+        assert!(default.default.extra_games.is_empty());
         let cfg = parse(
             r#"default:
   monitor_games true
   game_blacklist ["ASEPRITE" r"^steam:440$"]
+  extra_games ["GOG-GAME.exe" "/games/custom"]
 end
 quiet:
   mode "overlay"
@@ -863,6 +869,7 @@ end
 gaming:
   mode "overlay"
   game_blacklist [ ]
+  extra_games [ ]
 end
 fresh:
   mode "fresh"
@@ -877,6 +884,7 @@ end
             .unwrap();
         assert!(!quiet.monitor_games);
         assert_eq!(quiet.game_blacklist.len(), 2);
+        assert_eq!(quiet.extra_games[0].render(), "gog-game.exe");
         assert!(quiet.game_blacklist[0].matches_lc("aseprite"));
         assert!(quiet.game_blacklist[1].matches_lc("steam:440"));
         let gaming = cfg
@@ -884,6 +892,7 @@ end
             .unwrap();
         assert!(gaming.monitor_games);
         assert!(gaming.game_blacklist.is_empty());
+        assert!(gaming.extra_games.is_empty());
         let fresh = cfg
             .effective_for(Some("fresh"), PlanSource::Desktop)
             .unwrap();
@@ -892,6 +901,7 @@ end
         for text in [
             "default:\n monitor_games 123\nend\n",
             "default:\n game_blacklist true\nend\n",
+            "default:\n extra_games true\nend\n",
             "default:\nend\nbad:\n monitor_games \"false\"\nend\n",
         ] {
             assert!(parse(text).is_err());

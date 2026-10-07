@@ -236,6 +236,14 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
     out.push_str(&format!("MonitorGamepad: {}\n", yesno(cfg.monitor_gamepad)));
     out.push_str(&format!("MonitorGames: {}\n", yesno(cfg.monitor_games)));
     out.push_str(&format!(
+        "ExtraGames: {}\n",
+        if cfg.extra_games.is_empty() {
+            "none".to_string()
+        } else {
+            join_patterns(&cfg.extra_games)
+        }
+    ));
+    out.push_str(&format!(
         "GameBlacklist: {}\n",
         if cfg.game_blacklist.is_empty() {
             "none".to_string()

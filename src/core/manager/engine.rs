@@ -644,7 +644,7 @@ impl Manager {
     }
 
     fn refresh_timing_holds(&self, state: &mut State, cfg: &Config, now_ms: u64) {
-        state.apply_game_rules(cfg.monitor_games, &cfg.game_blacklist);
+        state.apply_game_rules(cfg.monitor_games, &cfg.game_blacklist, &cfg.extra_games);
         state.set_lid_paused(state.lid_closed() && cfg.pause_on_lid_close);
         let new_paused =
             state.manually_paused() || state.inhibitors_active() || state.system_paused();

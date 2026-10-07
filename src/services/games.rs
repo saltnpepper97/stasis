@@ -22,6 +22,7 @@ pub struct GameRules {
     pub epoch: u64,
     pub monitor_games: bool,
     pub blacklist: Vec<Pattern>,
+    pub extra_games: Vec<Pattern>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,7 @@ impl CatalogueGame {
                     .as_ref()
                     .map(|path| path.to_string_lossy().into_owned()),
                 pids: Vec::new(),
+                extra_rule: None,
             },
             directory,
             steam_app_id,
@@ -156,6 +158,7 @@ impl Catalogue {
                         source: "Steam".into(),
                         path_game_dir: None,
                         pids: Vec::new(),
+                        extra_rule: None,
                     })
             });
         }
@@ -163,9 +166,103 @@ impl Catalogue {
     }
 }
 
+fn extra_window_matches(pattern: &Pattern, app_id: &str) -> bool {
+    let app_id = app_id.to_lowercase();
+    match pattern {
+        Pattern::Literal(literal) => {
+            app_id == *literal || app_id.strip_suffix(".exe") == Some(literal.as_str())
+        }
+        Pattern::Regex(regex) => regex.is_match(&app_id),
+    }
+}
+
+fn add_extra_games(
+    running: &mut Vec<DetectedGame>,
+    extra_games: &[Pattern],
+    processes: &[ObservedProcess],
+    window_app_ids: &[String],
+) {
+    let auto_pids = running
+        .iter()
+        .flat_map(|game| game.pids.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let auto_ids = running
+        .iter()
+        .map(|game| game.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut extras = BTreeMap::<String, DetectedGame>::new();
+    let mut process_rules = BTreeSet::new();
+    for process in processes
+        .iter()
+        .filter(|process| !auto_pids.contains(&process.pid))
+    {
+        let Some(pattern) = extra_games
+            .iter()
+            .find(|pattern| process.matches_extra(pattern))
+        else {
+            continue;
+        };
+        let directory_rule = match pattern {
+            Pattern::Literal(literal) if literal.starts_with('/') => Some(literal.as_str()),
+            _ => None,
+        };
+        let title = directory_rule
+            .map(|root| basename_lc(Path::new(root)))
+            .or_else(|| process.names.first().cloned())
+            .unwrap_or_else(|| pattern.render());
+        let id = format!("extra:{}", directory_rule.unwrap_or(&title));
+        let observed = extras.entry(id.clone()).or_insert_with(|| DetectedGame {
+            id,
+            title,
+            source: "Extra games".into(),
+            path_game_dir: directory_rule.map(str::to_owned).or_else(|| {
+                process
+                    .executable_paths
+                    .first()
+                    .and_then(|path| path.parent())
+                    .map(|path| path.to_string_lossy().into_owned())
+            }),
+            pids: Vec::new(),
+            extra_rule: Some(pattern.render()),
+        });
+        observed.pids.push(process.pid);
+        observed.pids.sort_unstable();
+        observed.pids.dedup();
+        process_rules.insert(pattern.render());
+    }
+    for app_id in window_app_ids {
+        if steam_window_id(app_id).is_some_and(|id| auto_ids.contains(&format!("steam:{id}"))) {
+            continue;
+        }
+        let Some(pattern) = extra_games
+            .iter()
+            .find(|pattern| extra_window_matches(pattern, app_id))
+        else {
+            continue;
+        };
+        // This rule already has process evidence; the window is supplemental,
+        // not a second hold for the same explicitly configured game.
+        if process_rules.contains(&pattern.render()) {
+            continue;
+        }
+        let id = format!("extra:{}", app_id.to_lowercase());
+        extras.entry(id.clone()).or_insert_with(|| DetectedGame {
+            id,
+            title: app_id.clone(),
+            source: "Extra games".into(),
+            path_game_dir: None,
+            pids: Vec::new(),
+            extra_rule: Some(pattern.render()),
+        });
+    }
+    running.extend(extras.into_values());
+    running.sort_by(|a, b| a.id.cmp(&b.id));
+}
+
 #[derive(Debug)]
 struct ObservedProcess {
     pid: i32,
+    names: Vec<String>,
     executable_paths: Vec<PathBuf>,
     java_paths: Vec<PathBuf>,
     wine_game: bool,
@@ -183,6 +280,7 @@ impl ObservedProcess {
     ) -> Self {
         let mut process = Self {
             pid,
+            names: Vec::new(),
             executable_paths: Vec::new(),
             java_paths: Vec::new(),
             wine_game: false,
@@ -209,6 +307,7 @@ impl ObservedProcess {
             "bash" | "sh" | "dash" | "zsh" | "python" | "python3" | "python2" | "perl" | "ruby"
         ) || exe_name.starts_with("python3.");
         if !wine && !java && !interpreter {
+            process.names.push(exe_name.clone());
             process.executable_paths.push(canonical_or_original(exe));
         }
         if wine {
@@ -219,6 +318,7 @@ impl ObservedProcess {
             if let Some(target) = target {
                 let name = basename_lc(Path::new(&target.replace('\\', "/")));
                 if !is_runtime_helper(&name) {
+                    process.names.push(name);
                     process.wine_game = true;
                     if let Some(path) = executable_arg_path(target, cwd, wine_prefix) {
                         process.executable_paths.push(path);
@@ -232,6 +332,7 @@ impl ObservedProcess {
                 && let Some(path) = executable_arg_path(script, cwd, None)
             {
                 process.executable_paths.push(path);
+                process.names.push(basename_lc(Path::new(script)));
             }
         } else if java {
             for (i, arg) in argv.iter().enumerate() {
@@ -252,6 +353,38 @@ impl ObservedProcess {
             }
         }
         process
+    }
+
+    fn matches_extra(&self, pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::Literal(literal) if literal.starts_with('/') => {
+                let root = literal.trim_end_matches('/');
+                !root.is_empty()
+                    && self
+                        .executable_paths
+                        .iter()
+                        .chain(&self.java_paths)
+                        .any(|path| {
+                            let path = path.to_string_lossy().to_lowercase();
+                            path == root
+                                || path
+                                    .strip_prefix(root)
+                                    .is_some_and(|tail| tail.starts_with('/'))
+                        })
+            }
+            Pattern::Literal(literal) => self
+                .names
+                .iter()
+                .any(|name| name == literal || name.strip_suffix(".exe") == Some(literal)),
+            Pattern::Regex(regex) => {
+                self.names.iter().any(|name| regex.is_match(name))
+                    || self
+                        .executable_paths
+                        .iter()
+                        .chain(&self.java_paths)
+                        .any(|path| regex.is_match(&path.to_string_lossy().to_lowercase()))
+            }
+        }
     }
 
     fn matches(&self, game: &CatalogueGame) -> bool {
@@ -401,14 +534,15 @@ fn steam_window_id(app_id: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn parse_window_ids(backend: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+fn parse_window_app_ids(backend: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
     let mut ids = BTreeSet::new();
     if backend == "niri" {
         for line in String::from_utf8_lossy(bytes).lines() {
-            if let Some(app_id) = line.strip_prefix("  App ID: ")
-                && let Some(id) = steam_window_id(app_id.trim().trim_matches('"'))
-            {
-                ids.insert(id);
+            if let Some(app_id) = line.strip_prefix("  App ID: ") {
+                let app_id = app_id.trim().trim_matches('"');
+                if !app_id.is_empty() {
+                    ids.insert(app_id.to_owned());
+                }
             }
         }
     } else {
@@ -429,18 +563,18 @@ fn parse_window_ids(backend: &str, bytes: &[u8]) -> Result<Vec<String>, String> 
                     if let Some(id) = node
                         .get("app_id")
                         .and_then(|id| id.as_str())
-                        .and_then(steam_window_id)
+                        .filter(|id| !id.is_empty())
                     {
-                        ids.insert(id);
+                        ids.insert(id.to_owned());
                     }
                 }
             } else {
                 if let Some(id) = item
                     .get("class")
                     .and_then(|id| id.as_str())
-                    .and_then(steam_window_id)
+                    .filter(|id| !id.is_empty())
                 {
-                    ids.insert(id);
+                    ids.insert(id.to_owned());
                 }
             }
         }
@@ -448,7 +582,7 @@ fn parse_window_ids(backend: &str, bytes: &[u8]) -> Result<Vec<String>, String> 
     Ok(ids.into_iter().collect())
 }
 
-async fn read_window_ids() -> Result<Vec<String>, String> {
+async fn read_window_app_ids() -> Result<Vec<String>, String> {
     let desktops = [
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
@@ -480,7 +614,7 @@ async fn read_window_ids() -> Result<Vec<String>, String> {
     if !output.status.success() {
         return Err(format!("{backend} window query failed ({})", output.status));
     }
-    parse_window_ids(backend, &output.stdout)
+    parse_window_app_ids(backend, &output.stdout)
 }
 
 pub async fn run_games(
@@ -530,7 +664,7 @@ pub async fn run_games(
             info.errors = catalogue.errors.clone();
             let (processes, window_ids) = tokio::join!(
                 tokio::task::spawn_blocking(read_processes),
-                read_window_ids()
+                read_window_app_ids()
             );
             match processes {
                 Ok(Ok(processes)) => {
@@ -544,7 +678,12 @@ pub async fn run_games(
                             last_window_ids.clone()
                         }
                     };
-                    info.running = catalogue.detect(&processes, &ids);
+                    let steam_ids = ids
+                        .iter()
+                        .filter_map(|id| steam_window_id(id))
+                        .collect::<Vec<_>>();
+                    info.running = catalogue.detect(&processes, &steam_ids);
+                    add_extra_games(&mut info.running, &rules.extra_games, &processes, &ids);
                 }
                 error => {
                     info.errors.push(format!("process scan failed: {error:?}"));
@@ -590,6 +729,49 @@ pub async fn run_games(
 mod tests {
     use super::*;
 
+    struct NativeGame {
+        root: PathBuf,
+        child: std::process::Child,
+    }
+
+    impl NativeGame {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "stasis-extra-game-test-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let exe = root.join("test-game");
+            std::fs::copy("/usr/bin/sleep", &exe).unwrap();
+            // Parallel tests can fork while another thread holds a copy's
+            // writable descriptor. Retry the transient exec-busy condition.
+            let mut attempts = 0;
+            let child = loop {
+                match std::process::Command::new(&exe).arg("30").spawn() {
+                    Ok(child) => break child,
+                    Err(error) if error.raw_os_error() == Some(26) && attempts < 20 => {
+                        attempts += 1;
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("test game spawn: {error}"),
+                }
+            };
+            Self { root, child }
+        }
+    }
+
+    impl Drop for NativeGame {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
     fn game(id: &str, root: Option<&str>) -> CatalogueGame {
         CatalogueGame {
             identity: DetectedGame {
@@ -598,6 +780,7 @@ mod tests {
                 source: "Steam".into(),
                 path_game_dir: root.map(str::to_owned),
                 pids: Vec::new(),
+                extra_rule: None,
             },
             directory: root.map(PathBuf::from),
             steam_app_id: Some(id.into()),
@@ -825,6 +1008,152 @@ mod tests {
     }
 
     #[test]
+    fn extra_rules_detect_missed_executables_directories_and_window_ids_and_respect_blacklist() {
+        let wine = process(
+            "/usr/bin/wine",
+            "/",
+            &["wine", "C:\\GOG\\Missed Game\\missed-game.exe"],
+            None,
+        );
+        let rules = [Pattern::Literal("missed-game.exe".into())];
+        let mut running = Vec::new();
+        add_extra_games(&mut running, &rules, &[wine], &["Missed-Game.exe".into()]);
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].title, "missed-game.exe");
+        assert_eq!(running[0].pids, [42]);
+        assert_eq!(running[0].extra_rule.as_deref(), Some("missed-game.exe"));
+        let mut info = GamesInfo {
+            running,
+            ..Default::default()
+        };
+        info.apply_rules(true, &[Pattern::Literal("missed-game".into())]);
+        assert!(info.running.is_empty());
+        assert_eq!(info.ignored.len(), 1);
+
+        let mut running = Vec::new();
+        add_extra_games(
+            &mut running,
+            &[Pattern::Literal("org.gog.customgame".into())],
+            &[],
+            &["org.gog.CustomGame".into()],
+        );
+        assert_eq!(running[0].id, "extra:org.gog.customgame");
+
+        let mut running = Vec::new();
+        let native = process("/games/gog/game/bin/start", "/", &["start"], None);
+        add_extra_games(
+            &mut running,
+            &[Pattern::Literal("/games/gog/game".into())],
+            &[native],
+            &[],
+        );
+        assert_eq!(running[0].path_game_dir.as_deref(), Some("/games/gog/game"));
+        assert_eq!(running[0].title, "game");
+        assert!(
+            !process("/games/gog/game2/start", "/", &["start"], None)
+                .matches_extra(&Pattern::Literal("/games/gog/game".into()))
+        );
+        assert!(
+            !process(
+                "/usr/bin/wineserver",
+                "/games/gog/game",
+                &["wineserver"],
+                None
+            )
+            .matches_extra(&Pattern::Regex(regex::Regex::new("wine").unwrap()))
+        );
+    }
+
+    #[test]
+    fn extra_rules_do_not_duplicate_automatic_games_and_regexes_match_real_identity() {
+        let catalogue = Catalogue {
+            by_launcher: BTreeMap::from([("Steam".into(), vec![game("123", Some("/games/test"))])]),
+            ..Default::default()
+        };
+        let observed = process("/games/test/game", "/", &["game"], None);
+        let mut running = catalogue.detect(&[observed], &["123".into()]);
+        let observed = process("/games/test/game", "/", &["game"], None);
+        add_extra_games(
+            &mut running,
+            &[Pattern::Regex(regex::Regex::new("game|steam_app").unwrap())],
+            &[observed],
+            &["steam_app_123".into()],
+        );
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].id, "steam:123");
+        let mut running = Vec::new();
+        let observed = process("/games/unregistered/gog-game", "/", &["gog-game"], None);
+        add_extra_games(
+            &mut running,
+            &[Pattern::Regex(regex::Regex::new("^gog-game$").unwrap())],
+            &[observed],
+            &[],
+        );
+        assert_eq!(running[0].title, "gog-game");
+    }
+
+    #[tokio::test]
+    async fn live_extra_game_service_blacklists_removes_and_disables_a_real_process() {
+        let fixture = NativeGame::new();
+        let pid = fixture.child.id() as i32;
+        let extra = Pattern::Literal(fixture.root.to_string_lossy().to_lowercase());
+        let (tx, mut rx) = mpsc::channel(8);
+        let (rules_tx, rules_rx) = watch::channel(GameRules {
+            epoch: 0,
+            monitor_games: true,
+            blacklist: Vec::new(),
+            extra_games: vec![extra.clone()],
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_games(tx, rules_rx, shutdown_rx));
+        for phase in 0..4 {
+            if phase > 0 {
+                rules_tx
+                    .send(GameRules {
+                        epoch: phase,
+                        monitor_games: phase != 3,
+                        blacklist: if phase == 1 {
+                            vec![Pattern::Literal("extra-game".into())]
+                        } else {
+                            Vec::new()
+                        },
+                        extra_games: if phase == 2 {
+                            Vec::new()
+                        } else {
+                            vec![extra.clone()]
+                        },
+                    })
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let Some(ManagerMsg::Event(Event::GamesChanged { info, .. })) = rx.recv().await
+                    else {
+                        panic!("expected game status");
+                    };
+                    let running = info.running.iter().any(|game| game.pids.contains(&pid));
+                    let ignored = info.ignored.iter().any(|game| game.pids.contains(&pid));
+                    if match phase {
+                        0 => running,
+                        1 => !running && ignored,
+                        2 => !running && !ignored,
+                        _ => !info.monitoring && !running && !ignored,
+                    } {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
     fn steam_fallback_accepts_only_actual_app_ids_in_supported_window_formats() {
         for value in [
             "Steam",
@@ -838,47 +1167,48 @@ mod tests {
         }
         let current = br#"[{"nodes":[{"app_id":"steam_app_123"},{"app_id":"Steam"}]}]"#;
         let legacy = br#"{"outputs":[{"nodes":[{"app_id":"steam_app_123"}]}]}"#;
-        assert_eq!(parse_window_ids("halley", current).unwrap(), ["123"]);
-        assert_eq!(parse_window_ids("halley", legacy).unwrap(), ["123"]);
         assert_eq!(
-            parse_window_ids(
+            parse_window_app_ids("halley", current).unwrap(),
+            ["Steam", "steam_app_123"]
+        );
+        assert_eq!(
+            parse_window_app_ids("halley", legacy).unwrap(),
+            ["steam_app_123"]
+        );
+        assert_eq!(
+            parse_window_app_ids(
                 "hyprland",
                 br#"[{"class":"steam_app_123"},{"class":"wine"}]"#
             )
             .unwrap(),
-            ["123"]
+            ["steam_app_123", "wine"]
         );
         assert_eq!(
-            parse_window_ids("niri", b"Window ID 1:\n  App ID: \"steam_app_123\"\n").unwrap(),
-            ["123"]
+            parse_window_app_ids("niri", b"Window ID 1:\n  App ID: \"steam_app_123\"\n").unwrap(),
+            ["steam_app_123"]
         );
-        assert!(parse_window_ids("halley", b"{}").is_err());
-        assert!(parse_window_ids("hyprland", b"bad json").is_err());
+        assert!(parse_window_app_ids("halley", b"{}").is_err());
+        assert!(parse_window_app_ids("hyprland", b"bad json").is_err());
     }
 
     #[test]
     fn linux_process_scan_detects_a_real_native_process_and_clears_after_exit() {
-        let root = std::env::temp_dir().join(format!("stasis-game-test-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let exe = root.join("test-game");
-        std::fs::copy("/usr/bin/sleep", &exe).unwrap();
-        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
-        let game = game("123", Some(root.to_str().unwrap()));
+        let mut fixture = NativeGame::new();
+        let game = game("123", Some(fixture.root.to_str().unwrap()));
         let result = read_processes().unwrap();
         assert!(
             result
                 .iter()
-                .any(|process| process.pid == child.id() as i32 && process.matches(&game))
+                .any(|process| process.pid == fixture.child.id() as i32 && process.matches(&game))
         );
-        child.kill().unwrap();
-        child.wait().unwrap();
+        fixture.child.kill().unwrap();
+        fixture.child.wait().unwrap();
         assert!(
             !read_processes()
                 .unwrap()
                 .iter()
-                .any(|process| process.pid == child.id() as i32 && process.matches(&game))
+                .any(|process| process.pid == fixture.child.id() as i32 && process.matches(&game))
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -888,6 +1218,7 @@ mod tests {
             epoch: 0,
             monitor_games: false,
             blacklist: Vec::new(),
+            extra_games: Vec::new(),
         });
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(run_games(tx, rules_rx, shutdown_rx));
@@ -898,6 +1229,7 @@ mod tests {
                         epoch,
                         monitor_games: false,
                         blacklist: vec![Pattern::Literal("test".into())],
+                        extra_games: Vec::new(),
                     })
                     .unwrap();
             }
@@ -933,7 +1265,11 @@ mod tests {
         }
         let catalogue = Catalogue::default().refresh();
         let processes = read_processes().unwrap();
-        let ids = read_window_ids().await.unwrap();
+        let app_ids = read_window_app_ids().await.unwrap();
+        let ids = app_ids
+            .iter()
+            .filter_map(|id| steam_window_id(id))
+            .collect::<Vec<_>>();
         let detected = catalogue.detect(&processes, &ids);
         let report = serde_json::json!({
             "catalogue_entries": catalogue.games().count(), "errors": catalogue.errors,
