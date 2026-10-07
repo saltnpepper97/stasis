@@ -146,6 +146,8 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
                 rc.get_or("default.low_power_when_idle_timeout", 0u64);
 
             cfg.monitor_gamepad = opt_bool(rc, "default.monitor_gamepad")?.unwrap_or(true);
+            cfg.monitor_games = opt_bool(rc, "default.monitor_games")?.unwrap_or(true);
+            cfg.game_blacklist = get_vec_pattern(rc, "default.game_blacklist", Vec::new())?;
             cfg.monitor_media = rc.get_or("default.monitor_media", false);
             cfg.ignore_remote_media = rc.get_or("default.ignore_remote_media", false);
             // allow strings OR /regex/ entries (keep compiled regex)
@@ -245,6 +247,8 @@ fn parse_plan_block(
                 | "low_power_when_idle_timeout"
                 | "monitor_media"
                 | "monitor_gamepad"
+                | "monitor_games"
+                | "game_blacklist"
                 | "ignore_remote_media"
                 | "media_blacklist"
                 | "suspend_inhibit_media"
@@ -418,6 +422,8 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
             opt_u64(rc, format!("{name}.low_power_when_idle_timeout"))?;
 
         pc.monitor_gamepad = opt_bool(rc, format!("{name}.monitor_gamepad"))?;
+        pc.monitor_games = opt_bool(rc, format!("{name}.monitor_games"))?;
+        pc.game_blacklist = opt_vec_pattern(rc, &format!("{name}.game_blacklist"))?;
         pc.monitor_media = opt_bool(rc, format!("{name}.monitor_media"))?;
         pc.ignore_remote_media = opt_bool(rc, format!("{name}.ignore_remote_media"))?;
         pc.media_blacklist = opt_vec_pattern(rc, &format!("{name}.media_blacklist"))?;
@@ -707,6 +713,8 @@ fn log_config_debug(cfg_file: &ConfigFile) {
     eventline::debug!("  lid_open_action  = {:?}", cfg.lid_open_action);
 
     eventline::debug!("  monitor_gamepad = {:?}", cfg.monitor_gamepad);
+    eventline::debug!("  monitor_games = {}", cfg.monitor_games);
+    eventline::debug!("  game_blacklist = {:?}", cfg.game_blacklist);
     eventline::debug!("  monitor_media = {:?}", cfg.monitor_media);
     eventline::debug!("  ignore_remote_media = {:?}", cfg.ignore_remote_media);
     eventline::debug!("  media_blacklist = {:?}", cfg.media_blacklist);
@@ -836,6 +844,58 @@ mod tests {
         );
         assert!(parse("default:\n  pause_on_lid_close 123\nend\n").is_err());
         assert!(parse("default:\nend\nbroken:\n  pause_on_lid_close \"false\"\nend\n").is_err());
+    }
+
+    #[test]
+    fn games_default_on_and_profiles_replace_or_clear_blacklists() {
+        let default = parse("default:\nend\n").unwrap();
+        assert!(default.default.monitor_games);
+        assert!(default.default.game_blacklist.is_empty());
+        let cfg = parse(
+            r#"default:
+  monitor_games true
+  game_blacklist ["ASEPRITE" r"^steam:440$"]
+end
+quiet:
+  mode "overlay"
+  monitor_games false
+end
+gaming:
+  mode "overlay"
+  game_blacklist [ ]
+end
+fresh:
+  mode "fresh"
+  monitor_games false
+  game_blacklist ["picocad"]
+end
+"#,
+        )
+        .unwrap();
+        let quiet = cfg
+            .effective_for(Some("quiet"), PlanSource::Desktop)
+            .unwrap();
+        assert!(!quiet.monitor_games);
+        assert_eq!(quiet.game_blacklist.len(), 2);
+        assert!(quiet.game_blacklist[0].matches_lc("aseprite"));
+        assert!(quiet.game_blacklist[1].matches_lc("steam:440"));
+        let gaming = cfg
+            .effective_for(Some("gaming"), PlanSource::Desktop)
+            .unwrap();
+        assert!(gaming.monitor_games);
+        assert!(gaming.game_blacklist.is_empty());
+        let fresh = cfg
+            .effective_for(Some("fresh"), PlanSource::Desktop)
+            .unwrap();
+        assert!(!fresh.monitor_games);
+        assert_eq!(fresh.game_blacklist.len(), 1);
+        for text in [
+            "default:\n monitor_games 123\nend\n",
+            "default:\n game_blacklist true\nend\n",
+            "default:\nend\nbad:\n monitor_games \"false\"\nend\n",
+        ] {
+            assert!(parse(text).is_err());
+        }
     }
 
     #[test]

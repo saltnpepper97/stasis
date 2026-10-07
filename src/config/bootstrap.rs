@@ -94,6 +94,10 @@ default:
   # Count controller buttons/sticks/triggers as activity (needs device read access).
   monitor_gamepad true
 
+  # Automatically pause idle while games are running; no per-game rules needed.
+  monitor_games true
+  game_blacklist [ ]
+
   # Keep the historical lid pause; false starts the plan when the lid closes.
   pause_on_lid_close true
 
@@ -126,7 +130,6 @@ default:
   inhibit_apps [
     "vlc"
     "mpv"
-    r"steam_app_.*"
   ]
 
   # App/process patterns that block only automatic suspend. The remaining
@@ -270,6 +273,10 @@ default:
   # Count controller buttons/sticks/triggers as activity (needs device read access).
   monitor_gamepad true
 
+  # Automatically pause idle while games are running; no per-game rules needed.
+  monitor_games true
+  game_blacklist [ ]
+
   # Keep the historical lid pause; false starts the plan when the lid closes.
   pause_on_lid_close true
 
@@ -302,7 +309,6 @@ default:
   inhibit_apps [
     "vlc"
     "mpv"
-    r"steam_app_.*"
   ]
 
   # App/process patterns that block only automatic suspend. The remaining

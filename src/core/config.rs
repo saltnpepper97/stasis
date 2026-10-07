@@ -147,6 +147,10 @@ pub struct Config {
 
     /// Count Linux gamepad input as user activity (requires device read access).
     pub monitor_gamepad: bool,
+    /// Automatically inhibit idle while a detected game is running.
+    pub monitor_games: bool,
+    /// Detected game identities to ignore (same pattern syntax as media_blacklist).
+    pub game_blacklist: Vec<Pattern>,
     pub monitor_media: bool,
     pub ignore_remote_media: bool,
 
@@ -207,6 +211,8 @@ impl Config {
             lid_open_action: None,
 
             monitor_gamepad: true,
+            monitor_games: true,
+            game_blacklist: Vec::new(),
             monitor_media: false,
             ignore_remote_media: false,
             media_blacklist: Vec::new(),
@@ -390,6 +396,8 @@ pub struct PartialConfig {
     pub lid_open_action: Option<Option<String>>,
 
     pub monitor_gamepad: Option<bool>,
+    pub monitor_games: Option<bool>,
+    pub game_blacklist: Option<Vec<Pattern>>,
     pub monitor_media: Option<bool>,
     pub ignore_remote_media: Option<bool>,
 
@@ -471,6 +479,12 @@ impl PartialConfig {
 
         if let Some(v) = self.monitor_gamepad {
             base.monitor_gamepad = v;
+        }
+        if let Some(v) = self.monitor_games {
+            base.monitor_games = v;
+        }
+        if let Some(v) = &self.game_blacklist {
+            base.game_blacklist = v.clone();
         }
         if let Some(v) = self.monitor_media {
             base.monitor_media = v;

@@ -24,6 +24,10 @@ default:
   # Requires read access to controller /dev/input/event* devices.
   monitor_gamepad true
 
+  # Automatically pause idle while games are running; no per-game rules needed.
+  monitor_games true
+  game_blacklist [ ]
+
   # Keep the historical lid pause; false starts the plan when the lid closes.
   pause_on_lid_close true
   monitor_media true
@@ -77,8 +81,6 @@ default:
   inhibit_apps [
     "mpv"
     "vlc"
-    r".*\.exe"
-    r"steam_app_.*"
     r"firefox.*"
   ]
 
@@ -206,12 +208,9 @@ end
 gaming:
   mode "overlay"   # merges on top of active base (desktop/default OR laptop/ac/battery)
 
-  # Override globals (example: add/replace inhibitors)
-  inhibit_apps [
-    r".*\.exe"
-    r"steam_app_.*"
-    r".*\.x86_64"
-  ]
+  # Games are detected automatically; profiles can replace the blacklist.
+  monitor_games true
+  game_blacklist [ ]
 end
 
 work:
@@ -250,6 +249,10 @@ presentation:
   enable_dbus_inhibit true
   pre_suspend_command None
   monitor_gamepad true
+
+  # Automatically pause idle while games are running; no per-game rules needed.
+  monitor_games true
+  game_blacklist [ ]
 
   # Keep the historical lid pause; false starts the plan when the lid closes.
   pause_on_lid_close true
