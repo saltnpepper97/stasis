@@ -5,7 +5,7 @@ use crate::core::{
     action::Action,
     config::{Config, PlanSource, PlanStep, PlanStepKind},
     error::{ConfigError, Error, StateError},
-    events::{Event, LockSource, PowerState},
+    events::{ActivityKind, Event, LockSource, PowerState},
     state::State,
 };
 
@@ -64,8 +64,30 @@ impl Manager {
                 self.maybe_fire_low_power(state, &cfg, now_ms, &mut out);
             }
 
+            Event::UserActivity {
+                kind: ActivityKind::Gamepad,
+                ..
+            } => {
+                // Ignore queued input from a reader disabled by a profile/reload.
+                if !cfg.monitor_gamepad {
+                    return Ok(out);
+                }
+                state.note_gamepad_activity(now_ms);
+                // The compositor may remain idle throughout controller use.
+                // Reset the plan, but retain its inhibitor-aware observation:
+                // otherwise stopping play would wait forever for a new idle edge.
+                let compositor_idle = state.compositor_idle();
+                self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
+                state.set_compositor_idle(compositor_idle);
+                self.begin_idle_from_verified_observation(state, &cfg, now_ms);
+            }
+
             Event::UserActivity { .. } => {
                 self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
+            }
+
+            Event::GamepadDevicesChanged { devices, .. } => {
+                state.set_gamepad_devices(devices);
             }
 
             Event::BrowserActivity { .. } => {

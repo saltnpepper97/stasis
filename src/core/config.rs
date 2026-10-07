@@ -143,6 +143,8 @@ pub struct Config {
     /// Shell command to run immediately when the lid is opened (if any).
     pub lid_open_action: Option<String>,
 
+    /// Count Linux gamepad input as user activity (requires device read access).
+    pub monitor_gamepad: bool,
     pub monitor_media: bool,
     pub ignore_remote_media: bool,
 
@@ -201,6 +203,7 @@ impl Config {
             lid_close_action: None,
             lid_open_action: None,
 
+            monitor_gamepad: true,
             monitor_media: false,
             ignore_remote_media: false,
             media_blacklist: Vec::new(),
@@ -382,6 +385,7 @@ pub struct PartialConfig {
     pub lid_close_action: Option<Option<String>>,
     pub lid_open_action: Option<Option<String>>,
 
+    pub monitor_gamepad: Option<bool>,
     pub monitor_media: Option<bool>,
     pub ignore_remote_media: Option<bool>,
 
@@ -458,6 +462,9 @@ impl PartialConfig {
             base.lid_open_action = v.clone();
         }
 
+        if let Some(v) = self.monitor_gamepad {
+            base.monitor_gamepad = v;
+        }
         if let Some(v) = self.monitor_media {
             base.monitor_media = v;
         }

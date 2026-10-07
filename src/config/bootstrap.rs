@@ -91,6 +91,9 @@ default:
   # use a locker that exits immediately (daemon/background), e.g. via a wrapper script.
   #pre_suspend_command "sync"
 
+  # Count controller buttons/sticks/triggers as activity (needs device read access).
+  monitor_gamepad true
+
   # Non-browser media/audio inhibit only. Browser/media-tab inhibit is handled
   # by enable_dbus_inhibit above.
   monitor_media true
@@ -258,6 +261,9 @@ default:
 
   # Optional: run before suspending (e.g., ensure lock is up)
   #pre_suspend_command "swaylock"
+
+  # Count controller buttons/sticks/triggers as activity (needs device read access).
+  monitor_gamepad true
 
   # Non-browser media/audio inhibit only. Browser/media-tab inhibit is handled
   # by enable_dbus_inhibit above.

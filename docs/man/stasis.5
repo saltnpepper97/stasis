@@ -64,6 +64,28 @@ Browser/media-tab inhibit is handled here, not by \fBmonitor_media\fR.
 session launcher guidance).
 
 .TP
+.B monitor_gamepad true|false
+Counts Linux gamepad input as user activity (default true). Supports controller
+hotplug, buttons, D-pad, sticks, and triggers. Held controls keep resetting the
+idle timer; a connected controller at rest does not prevent idle.
+.PP
+Sticks use a 15% deadzone on either side of centre; triggers use 15% of their
+range. Larger driver-reported deadzones are respected. Motion sensors and
+touchpads are ignored. Requires read access to the controller's
+\fB/dev/input/event*\fR device; inaccessible devices are logged and retried.
+Devices are never grabbed, so games receive input normally.
+.PP
+May be overridden by profiles. Reload and profile selection update monitoring
+without restarting Stasis. Missing settings are backfilled with a config
+backup; explicit false values are preserved.
+.PP
+Controller input also works outside games. The tray and \fBstasis info\fR show
+controller names and recent input. \fBstasis info --json\fR includes a
+\fBgamepad\fR object with monitoring, devices, input_recent, and last_activity_ms.
+Input resets idle timers without setting a manual pause; \fBPaused: no\fR is
+normal during controller use. Recent input is shown for three seconds.
+
+.TP
 .B monitor_media true|false
 If true, non-browser media playback can inhibit idle evaluation.
 .PP
@@ -332,6 +354,7 @@ A minimal desktop example:
 default:
   enable_loginctl_integration true
   enable_dbus_inhibit true
+  monitor_gamepad true
   monitor_media true
   suspend_inhibit_media ["spotify" "mpd"]
   suspend_inhibit_apps ["handbrake"]

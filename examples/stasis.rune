@@ -20,6 +20,9 @@ default:
   enable_loginctl_integration false
   enable_dbus_inhibit true
   pre_suspend_command None
+  # Controller buttons, sticks, triggers and D-pad count as activity.
+  # Requires read access to controller /dev/input/event* devices.
+  monitor_gamepad true
   monitor_media true
   ignore_remote_media true
   # Matching media blocks only suspend; other eligible media pauses the full plan.
@@ -241,6 +244,7 @@ presentation:
   # Globals (must be set because fresh does not inherit defaults)
   enable_dbus_inhibit true
   pre_suspend_command None
+  monitor_gamepad true
   monitor_media false
   ignore_remote_media true
   debounce_seconds 0

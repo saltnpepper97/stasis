@@ -92,6 +92,18 @@ impl Daemon {
 
         tokio::spawn(crate::services::ticker::run_ticker(tx.clone()));
 
+        let effective = self
+            .manager
+            .cfg_file_ref()
+            .effective_for(self.state.active_profile(), self.state.plan_source())
+            .expect("daemon has a valid effective config");
+        let (gamepad_rules_tx, gamepad_rules_rx) = watch::channel(effective.monitor_gamepad);
+        tokio::spawn(crate::services::gamepad::run_gamepad(
+            tx.clone(),
+            gamepad_rules_rx,
+            shutdown.clone(),
+        ));
+
         let (app_rules_tx, app_rules_rx) = watch::channel(crate::services::app_inhibit::AppRules {
             epoch: self.inhibit_epoch,
             apps: self.inhibit_apps.clone(),
@@ -185,7 +197,8 @@ impl Daemon {
                             }
                         }
 
-                        ManagerMsg::UpdateInhibitRules { epoch, inhibit_apps, suspend_inhibit_apps, monitor_media, ignore_remote_media, media_blacklist, suspend_inhibit_media } => {
+                        ManagerMsg::UpdateInhibitRules { epoch, inhibit_apps, suspend_inhibit_apps, monitor_gamepad, monitor_media, ignore_remote_media, media_blacklist, suspend_inhibit_media } => {
+                            let _ = gamepad_rules_tx.send(monitor_gamepad);
                             self.inhibit_epoch = epoch;
                             self.inhibit_apps = inhibit_apps.clone();
                             self.suspend_inhibit_apps = suspend_inhibit_apps.clone();

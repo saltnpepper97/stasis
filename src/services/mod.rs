@@ -3,6 +3,7 @@
 
 pub mod app_inhibit;
 pub mod dbus;
+pub mod gamepad;
 pub mod low_power;
 pub mod media;
 pub mod power;

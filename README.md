@@ -38,6 +38,7 @@ Stasis is not a simple timer-based screen locker.
 It is a **context-aware, event-driven idle manager** built around explicit state and decisions.
 
 - 🧠 Smart idle detection with sequential, configurable timeouts
+- 🎮 Gamepad input activity, including hotplug and stick-drift filtering
 - 🎵 Media-aware idle handling
   - Optional audio-based detection
   - Differentiates active, paused, and muted streams
@@ -166,6 +167,38 @@ through the login1 interface provided by systemd-logind and eLogind.
 > If the compositor is not running in a proper session, inhibit monitoring may not activate.
 
 ---
+
+## Gamepad Activity
+
+`monitor_gamepad true` (the default) counts Linux controller buttons, D-pad,
+sticks, and triggers as user activity independently of the compositor. No
+per-game configuration is needed for this input detection. Controllers can be
+plugged in or disconnected while Stasis is running.
+
+Held controls keep resetting the idle timer. A connected controller at rest
+does not prevent idle; timers restart from the last input when controls are
+released. Sticks use a 15% deadzone on either side of centre, triggers use 15%
+of their range, and larger driver-reported deadzones are respected. Controller
+motion sensors and touchpads are ignored.
+
+Stasis needs read access to the controller's `/dev/input/event*` device. It
+logs inaccessible controllers and retries if access becomes available. Desktop
+sessions commonly grant access through logind/udev device ACLs; otherwise use
+your distribution's controller-specific udev access rules. Stasis never grabs
+the device, so games continue receiving input normally.
+
+Set `monitor_gamepad false` under `default:` or a profile to disable monitoring.
+Changes take effect on `stasis reload` or profile selection. Existing configs
+receive the missing setting through the usual backup-preserving migration;
+explicit values are kept.
+
+Controller input works outside games too. The tray menu shows the monitored
+controller names and whether input was detected recently. `stasis info` and its
+tooltip show the same information; `stasis info --json` includes a `gamepad`
+object with `monitoring`, `devices`, `input_recent`, and `last_activity_ms`.
+Recent input remains visible for three seconds so short presses can be seen
+across tray refreshes. Input resets the idle timer rather than setting a manual
+pause, so `Paused: no` is normal while controls are being used.
 
 ## D-Bus Inhibit Support
 

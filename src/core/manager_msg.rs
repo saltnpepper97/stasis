@@ -45,6 +45,7 @@ pub enum ManagerMsg {
         epoch: u64,
         inhibit_apps: Vec<Pattern>,
         suspend_inhibit_apps: Vec<Pattern>,
+        monitor_gamepad: bool,
         monitor_media: bool,
         ignore_remote_media: bool,
         media_blacklist: Vec<Pattern>,

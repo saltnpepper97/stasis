@@ -35,6 +35,7 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
 
     out.push_str(&format!("Profile: {}\n", profile_label(state)));
     out.push_str(&format!("Plan Source: {:?}\n", state.plan_source()));
+    out.push_str(&render_gamepad(state, cfg_opt, now_ms));
 
     let paused_reason = if state.is_locked() {
         Some("locked")
@@ -105,6 +106,7 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
 
     t.push_str(&format!("Profile: {}\n", profile_label(state)));
     t.push_str(&format!("Plan Source: {:?}\n", state.plan_source()));
+    t.push_str(&render_gamepad(state, cfg_opt, now_ms));
 
     if state.is_locked() {
         t.push_str("State: locked\n");
@@ -159,6 +161,25 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     t
 }
 
+fn render_gamepad(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String {
+    let info = state.gamepad_info(cfg_opt.is_some_and(|cfg| cfg.monitor_gamepad), now_ms);
+    let devices = if info.devices.is_empty() {
+        "none".to_string()
+    } else {
+        info.devices.join(", ")
+    };
+    let input = if !info.monitoring {
+        "monitoring disabled".to_string()
+    } else if info.input_recent {
+        "detected recently (idle timer reset)".to_string()
+    } else if let Some(last) = info.last_activity_ms {
+        format!("last input {}s ago", now_ms.saturating_sub(last) / 1_000)
+    } else {
+        "none detected yet".to_string()
+    };
+    format!("Gamepads: {devices}\nGamepad Input: {input}\n")
+}
+
 fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
     let Some(cfg) = cfg_opt else {
         return "Config: (selection failed)\n".to_string();
@@ -176,6 +197,7 @@ fn render_config(cfg_opt: Option<&Config>, state: &State) -> String {
         yesno(cfg.notify_on_unpause)
     ));
 
+    out.push_str(&format!("MonitorGamepad: {}\n", yesno(cfg.monitor_gamepad)));
     out.push_str(&format!("MonitorMedia: {}\n", yesno(cfg.monitor_media)));
     out.push_str(&format!(
         "IgnoreRemoteMedia: {}\n",

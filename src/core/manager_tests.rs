@@ -60,6 +60,207 @@ fn enter_idle(mgr: &mut Manager, state: &mut State, now_ms: u64) {
         .unwrap();
 }
 
+fn gamepad_activity(mgr: &mut Manager, state: &mut State, now_ms: u64) -> Vec<Action> {
+    mgr.handle_event(
+        state,
+        Event::UserActivity {
+            kind: ActivityKind::Gamepad,
+            now_ms,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn gamepad_status_reports_devices_input_recency_and_disconnect_without_holding_idle() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "off")]));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(
+        &mut state,
+        Event::GamepadDevicesChanged {
+            devices: vec!["Xbox controller".into()],
+            now_ms: 100,
+        },
+    )
+    .unwrap();
+    let snapshot = mgr.snapshot(&state, 100);
+    assert_eq!(snapshot.waybar.gamepad.devices, ["Xbox controller"]);
+    assert!(!snapshot.waybar.gamepad.input_recent);
+    assert!(snapshot.pretty_text.contains("Gamepads: Xbox controller"));
+    assert!(
+        snapshot
+            .waybar
+            .tooltip
+            .contains("Gamepads: Xbox controller")
+    );
+    // Connection metadata alone must not postpone the idle action.
+    assert!(
+        !mgr.handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+            .unwrap()
+            .is_empty()
+    );
+    gamepad_activity(&mut mgr, &mut state, 2_000);
+    let snapshot = mgr.snapshot(&state, 2_100);
+    assert!(snapshot.waybar.gamepad.input_recent);
+    assert_eq!(snapshot.waybar.gamepad.last_activity_ms, Some(2_000));
+    assert!(snapshot.pretty_text.contains("idle timer reset"));
+    assert!(!mgr.snapshot(&state, 5_000).waybar.gamepad.input_recent);
+    mgr.handle_event(
+        &mut state,
+        Event::GamepadDevicesChanged {
+            devices: vec![],
+            now_ms: 5_100,
+        },
+    )
+    .unwrap();
+    let snapshot = mgr.snapshot(&state, 5_100);
+    assert!(snapshot.waybar.gamepad.devices.is_empty());
+    assert!(!snapshot.waybar.gamepad.input_recent);
+    assert_eq!(snapshot.waybar.gamepad.last_activity_ms, None);
+}
+
+#[test]
+fn gamepad_keeps_resetting_timeout_then_idles_without_another_compositor_edge() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "dpms")]));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+
+    for now_ms in (250..=10_000).step_by(250) {
+        assert!(gamepad_activity(&mut mgr, &mut state, now_ms).is_empty());
+        assert!(state.compositor_idle());
+        assert!(
+            mgr.handle_event(&mut state, Event::Tick { now_ms })
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 10_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 11_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".into()
+        }]
+    );
+}
+
+#[test]
+fn gamepad_never_invents_compositor_idle_or_bypasses_a_pause() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "dpms")]));
+    let mut state = State::new(0);
+    gamepad_activity(&mut mgr, &mut state, 100);
+    assert!(!state.compositor_idle());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 5_000 })
+            .unwrap()
+            .is_empty()
+    );
+
+    enter_idle(&mut mgr, &mut state, 5_000);
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 5_100 })
+        .unwrap();
+    gamepad_activity(&mut mgr, &mut state, 5_200);
+    assert!(state.manually_paused());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 7_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(&mut state, Event::ManualResume { now_ms: 7_000 })
+        .unwrap();
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 8_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".into()
+        }]
+    );
+}
+
+#[test]
+fn gamepad_restores_dpms_and_low_power_then_can_idle_again() {
+    let mut dpms = step(PlanStepKind::Dpms, 1, "off");
+    dpms.resume_command = Some("on".into());
+    let mut mgr = Manager::new(cfg_with_plan(vec![dpms]));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+        .unwrap();
+    state.set_low_power_active(true);
+    assert_eq!(
+        gamepad_activity(&mut mgr, &mut state, 2_000),
+        vec![
+            Action::ExitLowPower,
+            Action::RunResumeCommand {
+                command: "on".into()
+            }
+        ]
+    );
+    assert!(gamepad_activity(&mut mgr, &mut state, 2_250).is_empty());
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 3_250 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "off".into()
+        }]
+    );
+}
+
+#[test]
+fn disabled_gamepad_monitoring_does_not_reset_the_idle_plan() {
+    let mut config = cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "dpms")]);
+    config.default.monitor_gamepad = false;
+    let mut mgr = Manager::new(config);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    gamepad_activity(&mut mgr, &mut state, 900);
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "dpms".into()
+        }]
+    );
+}
+
+#[test]
+fn gamepad_activity_while_locked_keeps_the_lock_and_restarts_post_lock_timing() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![
+        step(PlanStepKind::LockScreen, 1, "lock"),
+        step(PlanStepKind::Dpms, 1, "off"),
+    ]));
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(
+        &mut state,
+        Event::SessionLocked {
+            source: LockSource::LockedHint,
+            now_ms: 0,
+        },
+    )
+    .unwrap();
+    enter_idle(&mut mgr, &mut state, 100);
+    gamepad_activity(&mut mgr, &mut state, 500);
+    assert!(state.is_locked());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 1_499 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 1_500 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "off".into()
+        }]
+    );
+}
+
 #[test]
 fn watch_event_reports_only_shell_facing_state() {
     let mgr = Manager::new(cfg_with_plan(vec![]));

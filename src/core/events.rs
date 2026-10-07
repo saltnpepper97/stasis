@@ -6,6 +6,8 @@ use crate::core::blame::{DbusHold, Login1IdleHold};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityKind {
     Any,
+    /// Controller input observed outside the compositor's seat activity.
+    Gamepad,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +36,12 @@ pub enum Event {
     /// Input/activity observed (source-agnostic).
     UserActivity {
         kind: ActivityKind,
+        now_ms: u64,
+    },
+
+    /// Readable controllers currently monitored by the input service.
+    GamepadDevicesChanged {
+        devices: Vec<String>,
         now_ms: u64,
     },
 
@@ -155,6 +163,7 @@ impl Event {
         match self {
             Event::Tick { now_ms }
             | Event::UserActivity { now_ms, .. }
+            | Event::GamepadDevicesChanged { now_ms, .. }
             | Event::BrowserActivity { now_ms }
             | Event::BrowserInactive { now_ms }
             | Event::CompositorIdled { now_ms }

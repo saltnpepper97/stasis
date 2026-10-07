@@ -22,6 +22,7 @@ pub enum MigrateOutcome {
 /// parser defaults and are not written into a user's customized file merely
 /// because the shipped example contains them.
 const DEFAULT_BACKFILLS: &[(&str, &str)] = &[
+    ("monitor_gamepad", "monitor_gamepad true"),
     ("suspend_inhibit_media", "suspend_inhibit_media [ ]"),
     ("suspend_inhibit_apps", "suspend_inhibit_apps [ ]"),
 ];
@@ -258,6 +259,37 @@ mod tests {
     }
 
     #[test]
+    fn explicit_gamepad_opt_out_is_preserved_and_backfill_is_idempotent() {
+        let dir = temp_dir("gamepad-opt-out");
+        let path = dir.join("stasis.rune");
+        let text = "default:\n  monitor_gamepad false # keep disabled\n  suspend_inhibit_media [ ]\n  suspend_inhibit_apps [ ]\nend\n";
+        fs::write(&path, text).unwrap();
+        assert_eq!(migrate_in_place(&path).unwrap(), MigrateOutcome::Current);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert!(!dir.join("stasis.rune.bak").exists());
+
+        let older = text.replace("  monitor_gamepad false # keep disabled\n", "");
+        fs::write(&path, &older).unwrap();
+        let outcome = migrate_in_place(&path).unwrap();
+        let MigrateOutcome::Migrated {
+            backup_path,
+            changes,
+        } = outcome
+        else {
+            panic!("gamepad setting should be backfilled");
+        };
+        assert_eq!(changes, ["added default.monitor_gamepad"]);
+        assert_eq!(fs::read_to_string(backup_path).unwrap(), older);
+        assert_eq!(migrate_in_place(&path).unwrap(), MigrateOutcome::Current);
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("monitor_gamepad true")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn backfill_preserves_custom_values_comments_and_numbered_backups() {
         let dir = temp_dir("backfill");
         let path = dir.join("stasis.rune");
@@ -288,7 +320,8 @@ end
         assert!(migrated.contains("suspend_inhibit_apps [ ]"));
         assert_eq!(backup_path, dir.join("stasis.rune.bak.1"));
         assert_eq!(fs::read_to_string(backup_path).unwrap(), original);
-        assert_eq!(changes.len(), 2);
+        assert!(migrated.contains("monitor_gamepad true"));
+        assert_eq!(changes.len(), 3);
 
         fs::remove_dir_all(dir).unwrap();
     }

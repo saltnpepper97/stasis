@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::core::blame::{DbusHold, Login1IdleHold};
 use crate::core::config::{PlanSource, PlanStep, PlanStepKind};
 use crate::core::events::PowerState;
+use crate::core::info::GamepadInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OneShotKey {
@@ -40,6 +41,8 @@ pub struct State {
     dbus_holds: Vec<DbusHold>,
     login1_idle_holds: Vec<Login1IdleHold>,
     browser_source_capture_active: bool,
+    gamepad_devices: Vec<String>,
+    last_gamepad_activity_ms: Option<u64>,
 
     // Pause policy
     manually_paused: bool,
@@ -129,6 +132,8 @@ impl State {
             dbus_holds: Vec::new(),
             login1_idle_holds: Vec::new(),
             browser_source_capture_active: false,
+            gamepad_devices: Vec::new(),
+            last_gamepad_activity_ms: None,
             manually_paused: false,
             system_paused: false,
             paused: false,
@@ -176,6 +181,31 @@ impl State {
     }
 
     // ---------------- sizing / tracking ----------------
+
+    pub fn set_gamepad_devices(&mut self, devices: Vec<String>) {
+        self.gamepad_devices = devices;
+        if self.gamepad_devices.is_empty() {
+            self.last_gamepad_activity_ms = None;
+        }
+    }
+
+    pub fn note_gamepad_activity(&mut self, now_ms: u64) {
+        self.last_gamepad_activity_ms = Some(now_ms);
+    }
+
+    pub fn gamepad_info(&self, monitoring: bool, now_ms: u64) -> GamepadInfo {
+        GamepadInfo {
+            monitoring,
+            devices: self.gamepad_devices.clone(),
+            // Keep a short press visible across the tray's two-second refresh.
+            input_recent: monitoring
+                && !self.gamepad_devices.is_empty()
+                && self
+                    .last_gamepad_activity_ms
+                    .is_some_and(|last| now_ms.saturating_sub(last) < 3_000),
+            last_activity_ms: self.last_gamepad_activity_ms,
+        }
+    }
 
     pub fn ensure_plan_len(&mut self, len: usize) {
         if self.fired_steps.len() != len {

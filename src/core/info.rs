@@ -1,9 +1,17 @@
 // Author: Dustin Pilgrim
 // License: GPL-3.0-only
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::blame::Login1IdleHold;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GamepadInfo {
+    pub monitoring: bool,
+    pub devices: Vec<String>,
+    pub input_recent: bool,
+    pub last_activity_ms: Option<u64>,
+}
 
 /// Stable state published by `stasis watch`.
 ///
@@ -40,6 +48,7 @@ pub struct WaybarInfo {
     pub class: String,
     pub tooltip: String,
     pub profile: Option<String>,
+    pub gamepad: GamepadInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub login1_idle_inhibitors: Vec<Login1IdleHold>,
 }

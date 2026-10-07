@@ -33,6 +33,10 @@ impl Manager {
             class: alt.to_string(),
             tooltip: rendered.tooltip,
             profile,
+            gamepad: state.gamepad_info(
+                cfg_opt.as_ref().is_some_and(|cfg| cfg.monitor_gamepad),
+                now_ms,
+            ),
             login1_idle_inhibitors,
         };
 

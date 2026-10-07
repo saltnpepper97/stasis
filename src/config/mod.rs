@@ -145,6 +145,7 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
             cfg.low_power_when_idle_timeout =
                 rc.get_or("default.low_power_when_idle_timeout", 0u64);
 
+            cfg.monitor_gamepad = opt_bool(rc, "default.monitor_gamepad")?.unwrap_or(true);
             cfg.monitor_media = rc.get_or("default.monitor_media", false);
             cfg.ignore_remote_media = rc.get_or("default.ignore_remote_media", false);
             // allow strings OR /regex/ entries (keep compiled regex)
@@ -242,6 +243,7 @@ fn parse_plan_block(
                 | "low_power_when_idle"
                 | "low_power_when_idle_timeout"
                 | "monitor_media"
+                | "monitor_gamepad"
                 | "ignore_remote_media"
                 | "media_blacklist"
                 | "suspend_inhibit_media"
@@ -413,6 +415,7 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
         pc.low_power_when_idle_timeout =
             opt_u64(rc, format!("{name}.low_power_when_idle_timeout"))?;
 
+        pc.monitor_gamepad = opt_bool(rc, format!("{name}.monitor_gamepad"))?;
         pc.monitor_media = opt_bool(rc, format!("{name}.monitor_media"))?;
         pc.ignore_remote_media = opt_bool(rc, format!("{name}.ignore_remote_media"))?;
         pc.media_blacklist = opt_vec_pattern(rc, &format!("{name}.media_blacklist"))?;
@@ -699,6 +702,7 @@ fn log_config_debug(cfg_file: &ConfigFile) {
     eventline::debug!("  lid_close_action = {:?}", cfg.lid_close_action);
     eventline::debug!("  lid_open_action  = {:?}", cfg.lid_open_action);
 
+    eventline::debug!("  monitor_gamepad = {:?}", cfg.monitor_gamepad);
     eventline::debug!("  monitor_media = {:?}", cfg.monitor_media);
     eventline::debug!("  ignore_remote_media = {:?}", cfg.ignore_remote_media);
     eventline::debug!("  media_blacklist = {:?}", cfg.media_blacklist);
@@ -793,6 +797,24 @@ mod tests {
     fn parse(contents: &str) -> Result<ConfigFile, String> {
         let rc = RuneConfig::from_str(contents).expect("test config should be valid Rune");
         parse_config_file(&rc)
+    }
+
+    #[test]
+    fn gamepad_defaults_and_profile_overrides_parse_and_merge() {
+        assert!(parse("default:\nend\n").unwrap().default.monitor_gamepad);
+        let cfg = parse("default:\n  monitor_gamepad false\nend\ngaming:\n  mode \"overlay\"\n  monitor_gamepad true\nend\nquiet:\n  mode \"fresh\"\n  monitor_gamepad false\nend\n").unwrap();
+        assert!(!cfg.default.monitor_gamepad);
+        assert!(
+            cfg.effective_for(Some("gaming"), PlanSource::Desktop)
+                .unwrap()
+                .monitor_gamepad
+        );
+        assert!(
+            !cfg.effective_for(Some("quiet"), PlanSource::Desktop)
+                .unwrap()
+                .monitor_gamepad
+        );
+        assert!(parse("default:\n  monitor_gamepad 123\nend\n").is_err());
     }
 
     #[test]
