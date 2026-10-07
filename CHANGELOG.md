@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `pause_on_lid_close false` allows the configured idle plan to run while the lid is closed, starting a fresh countdown on closure and cancelling it on reopening. The default remains `true`; profiles, generated configs, and compatibility backfill include the setting ([#86](https://github.com/saltnpepper97/stasis/issues/86)).
+
 - Linux gamepad activity detection (`monitor_gamepad true` by default), including hotplug, buttons, D-pad, sticks, and triggers. Held controls keep the session active; neutral drift is filtered. Idle timing resumes when controls are released, without requiring per-game rules or a new compositor idle event. Requires read access to the controller's input device.
 - Gamepad monitoring is configurable in profiles and on reload; examples, generated configs, and existing-config backfill include the setting without overwriting explicit choices.
 - The tray, `stasis info`, and its JSON output report monitored controller names and recent input, including the last input timestamp. Controller activity works outside games as well as during play.
@@ -16,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Combined the tray's Pause and Resume entries into one action that follows the manual pause state.
 
 ### Fixed
+
+- Lid state is read at startup and reconciled before sleep resume, including laptops started or woken with the lid already closed. Duplicate lid/compositor reports do not restart the closed-lid countdown, and opening a lid cannot release an active sleep pause.
 
 - App inhibition on Halley now accepts its current window-list JSON array as well as the legacy wrapped format, restoring game detection for rules such as `steam_app_.*`.
 

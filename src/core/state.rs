@@ -47,8 +47,10 @@ pub struct State {
     // Pause policy
     manually_paused: bool,
 
-    // System pause (lid closed / preparing for sleep, etc.)
-    system_paused: bool,
+    // Sleep and lid holds are independent: opening the lid cannot release sleep.
+    preparing_for_sleep: bool,
+    lid_closed: bool,
+    lid_paused: bool,
 
     // Derived pause (manual OR inhibitors OR system)
     paused: bool,
@@ -135,7 +137,9 @@ impl State {
             gamepad_devices: Vec::new(),
             last_gamepad_activity_ms: None,
             manually_paused: false,
-            system_paused: false,
+            preparing_for_sleep: false,
+            lid_closed: false,
+            lid_paused: false,
             paused: false,
             pause_started_ms: None,
             suspend_hold_started_ms: None,
@@ -412,7 +416,11 @@ impl State {
     }
 
     pub fn system_paused(&self) -> bool {
-        self.system_paused
+        self.preparing_for_sleep || self.lid_paused
+    }
+
+    pub fn lid_closed(&self) -> bool {
+        self.lid_closed
     }
 
     pub fn paused(&self) -> bool {
@@ -535,8 +543,16 @@ impl State {
         self.manually_paused = v;
     }
 
-    pub fn set_system_paused(&mut self, v: bool) {
-        self.system_paused = v;
+    pub fn set_preparing_for_sleep(&mut self, v: bool) {
+        self.preparing_for_sleep = v;
+    }
+
+    pub fn set_lid_closed(&mut self, v: bool) {
+        self.lid_closed = v;
+    }
+
+    pub fn set_lid_paused(&mut self, v: bool) {
+        self.lid_paused = v;
     }
 
     pub fn set_paused(&mut self, v: bool) {

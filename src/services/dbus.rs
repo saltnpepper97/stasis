@@ -1172,6 +1172,74 @@ async fn spawn_dbus_inhibit_monitor(sink: Arc<dyn EventSink>) -> zbus::Result<()
     Ok(())
 }
 
+// Read uncached properties both at startup and wake. A subscription alone
+// misses a laptop which was already closed when Stasis started.
+async fn read_lid_state(connection: &Connection) -> zbus::Result<Option<bool>> {
+    let proxy = zbus::proxy::Builder::<Proxy<'_>>::new(connection)
+        .destination("org.freedesktop.UPower")?
+        .path("/org/freedesktop/UPower")?
+        .interface("org.freedesktop.UPower")?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await?;
+    if !proxy.get_property::<bool>("LidIsPresent").await? {
+        return Ok(None);
+    }
+    Ok(Some(proxy.get_property::<bool>("LidIsClosed").await?))
+}
+
+async fn publish_lid_state(connection: &Connection, sink: &Arc<dyn EventSink>) {
+    match read_lid_state(connection).await {
+        Ok(Some(closed)) => sink.push(if closed {
+            Event::LidClosed { now_ms: now_ms() }
+        } else {
+            Event::LidOpened { now_ms: now_ms() }
+        }),
+        Ok(None) => {}
+        Err(e) => eventline::warn!("D-Bus: could not read UPower lid state: {e:?}"),
+    }
+}
+
+async fn spawn_lid_monitor(connection: Connection, sink: Arc<dyn EventSink>) -> zbus::Result<()> {
+    let rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.UPower")?
+        .interface("org.freedesktop.DBus.Properties")?
+        .member("PropertiesChanged")?
+        .path("/org/freedesktop/UPower")?
+        .build();
+    // Subscribe before reading/activating UPower so no startup transition is lost.
+    let mut stream = zbus::MessageStream::for_match_rule(rule, &connection, None).await?;
+    publish_lid_state(&connection, &sink).await;
+    tokio::spawn(async move {
+        while let Some(msg) = stream.next().await {
+            let Ok(msg) = msg else { continue };
+            let body = msg.body();
+            let parsed: (
+                String,
+                HashMap<String, zbus::zvariant::Value<'_>>,
+                Vec<String>,
+            ) = match body.deserialize() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let (iface, changed, invalidated) = parsed;
+            if iface == "org.freedesktop.UPower"
+                && (changed.contains_key("LidIsClosed")
+                    || changed.contains_key("LidIsPresent")
+                    || invalidated
+                        .iter()
+                        .any(|key| key == "LidIsClosed" || key == "LidIsPresent"))
+            {
+                // Fetch current state rather than replaying a queued stale value.
+                // This also handles UPower invalidating a property without a value.
+                publish_lid_state(&connection, &sink).await;
+            }
+        }
+    });
+    Ok(())
+}
+
 async fn run_dbus(
     sink: Arc<dyn EventSink>,
     enable_loginctl: bool,
@@ -1226,12 +1294,18 @@ async fn run_dbus(
                 Ok(proxy) => match proxy.receive_signal("PrepareForSleep").await {
                     Ok(mut stream) => {
                         let sink = sink.clone();
+                        let connection = sys.clone();
                         tokio::spawn(async move {
                             while let Some(sig) = stream.next().await {
                                 let going_down: bool = match sig.body().deserialize() {
                                     Ok(v) => v,
                                     Err(_) => continue,
                                 };
+                                if !going_down {
+                                    // Reconcile the hardware state before wake handling:
+                                    // the lid may have changed while we were asleep.
+                                    publish_lid_state(&connection, &sink).await;
+                                }
                                 let t = now_ms();
                                 sink.push(if going_down {
                                     Event::PrepareForSleep { now_ms: t }
@@ -1349,68 +1423,8 @@ async fn run_dbus(
             }
         }
 
-        {
-            match Proxy::new(
-                sys,
-                "org.freedesktop.UPower",
-                "/org/freedesktop/UPower",
-                "org.freedesktop.UPower",
-            )
-            .await
-            {
-                Ok(proxy) => {
-                    // Force service activation up front; a raw signal match rule alone
-                    // does not guarantee UPower is started yet.
-                    if let Err(e) = proxy.get_property::<bool>("LidIsPresent").await {
-                        eventline::warn!("D-Bus: could not read initial UPower lid state: {e:?}");
-                    }
-                }
-                Err(e) => {
-                    eventline::warn!("D-Bus: could not create UPower proxy: {e:?}");
-                }
-            }
-
-            let rule = MatchRule::builder()
-                .msg_type(zbus::message::Type::Signal)
-                .interface("org.freedesktop.DBus.Properties")?
-                .member("PropertiesChanged")?
-                .path("/org/freedesktop/UPower")?
-                .build();
-
-            let mut stream = zbus::MessageStream::for_match_rule(rule, sys, None).await?;
-            let sink = sink.clone();
-
-            tokio::spawn(async move {
-                use zbus::zvariant::Value;
-
-                while let Some(msg) = stream.next().await {
-                    let Ok(msg) = msg else { continue };
-
-                    let body = msg.body();
-                    let parsed: (String, HashMap<String, Value>, Vec<String>) =
-                        match body.deserialize() {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-
-                    let (iface, changed, _invalidated) = parsed;
-
-                    if iface != "org.freedesktop.UPower" {
-                        continue;
-                    }
-
-                    if let Some(v) = changed.get("LidIsClosed") {
-                        if let Ok(closed) = v.clone().downcast::<bool>() {
-                            let t = now_ms();
-                            sink.push(if closed {
-                                Event::LidClosed { now_ms: t }
-                            } else {
-                                Event::LidOpened { now_ms: t }
-                            });
-                        }
-                    }
-                }
-            });
+        if let Err(e) = spawn_lid_monitor(sys.clone(), sink.clone()).await {
+            eventline::warn!("D-Bus: lid monitoring unavailable: {e:?}");
         }
     } else {
         eventline::warn!("D-Bus: system bus unavailable; login1/lid monitoring disabled");
@@ -1648,5 +1662,146 @@ Properties:
         assert!(tracker.reconcile(Vec::new(), 6_000).is_empty());
         let restarted = tracker.reconcile(vec![codex], 7_000);
         assert_eq!(restarted[0].started_at_ms, 7_000);
+    }
+}
+
+#[cfg(test)]
+mod lid_dbus_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    struct PrivateBus(Child);
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    struct MockUPower {
+        closed: Arc<AtomicBool>,
+        present: Arc<AtomicBool>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.UPower")]
+    impl MockUPower {
+        #[zbus(property)]
+        fn lid_is_closed(&self) -> bool {
+            self.closed.load(Ordering::SeqCst)
+        }
+        #[zbus(property)]
+        fn lid_is_present(&self) -> bool {
+            self.present.load(Ordering::SeqCst)
+        }
+    }
+
+    struct ChannelSink(mpsc::UnboundedSender<Event>);
+    impl EventSink for ChannelSink {
+        fn push(&self, event: Event) {
+            self.0.send(event).unwrap();
+        }
+    }
+
+    async fn next_event(rx: &mut mpsc::UnboundedReceiver<Event>) -> Event {
+        tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn changed(server: &Connection, invalidated: bool) {
+        let values: HashMap<&str, zbus::zvariant::Value<'_>> = if invalidated {
+            HashMap::new()
+        } else {
+            // The test deliberately sends a stale value: the listener must use
+            // current hardware state rather than a queued property snapshot.
+            HashMap::from([("LidIsClosed", zbus::zvariant::Value::Bool(true))])
+        };
+        let invalidated = if invalidated {
+            vec!["LidIsClosed"]
+        } else {
+            vec![]
+        };
+        server
+            .emit_signal(
+                None::<&str>,
+                "/org/freedesktop/UPower",
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                &("org.freedesktop.UPower", values, invalidated),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires dbus-daemon; uses a private bus and a fake lid, never the system bus"]
+    async fn private_bus_reports_initial_lid_changes_invalidation_and_wake_snapshot() {
+        let child = Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut bus = PrivateBus(child);
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let closed = Arc::new(AtomicBool::new(true));
+        let present = Arc::new(AtomicBool::new(true));
+        let server = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .name("org.freedesktop.UPower")
+            .unwrap()
+            .serve_at(
+                "/org/freedesktop/UPower",
+                MockUPower {
+                    closed: closed.clone(),
+                    present: present.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let client = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink: Arc<dyn EventSink> = Arc::new(ChannelSink(tx));
+        spawn_lid_monitor(client.clone(), sink.clone())
+            .await
+            .unwrap();
+        assert!(matches!(next_event(&mut rx).await, Event::LidClosed { .. }));
+
+        closed.store(false, Ordering::SeqCst);
+        changed(&server, false).await;
+        assert!(matches!(next_event(&mut rx).await, Event::LidOpened { .. }));
+        closed.store(true, Ordering::SeqCst);
+        changed(&server, true).await;
+        assert!(matches!(next_event(&mut rx).await, Event::LidClosed { .. }));
+
+        // A lid change during sleep can have no signal. The wake path calls the
+        // same uncached reconciliation before ResumedFromSleep is published.
+        closed.store(false, Ordering::SeqCst);
+        publish_lid_state(&client, &sink).await;
+        assert!(matches!(next_event(&mut rx).await, Event::LidOpened { .. }));
+        present.store(false, Ordering::SeqCst);
+        assert_eq!(read_lid_state(&client).await.unwrap(), None);
+        publish_lid_state(&client, &sink).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err()
+        );
+        drop(client);
+        drop(server);
     }
 }

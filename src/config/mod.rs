@@ -166,6 +166,7 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
             cfg.suspend_inhibit_apps =
                 get_vec_pattern(rc, "default.suspend_inhibit_apps", Vec::new())?;
 
+            cfg.pause_on_lid_close = opt_bool(rc, "default.pause_on_lid_close")?.unwrap_or(true);
             // lid actions: plain shell command strings (optional)
             cfg.lid_close_action = parse_lid_action(rc, "default.lid_close_action")?;
             cfg.lid_open_action = parse_lid_action(rc, "default.lid_open_action")?;
@@ -253,6 +254,7 @@ fn parse_plan_block(
                 | "notification_icon"
                 | "inhibit_apps"
                 | "suspend_inhibit_apps"
+                | "pause_on_lid_close"
                 | "lid_close_action"
                 | "lid_open_action"
         )
@@ -428,6 +430,7 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
         pc.inhibit_apps = opt_vec_pattern(rc, &format!("{name}.inhibit_apps"))?;
         pc.suspend_inhibit_apps = opt_vec_pattern(rc, &format!("{name}.suspend_inhibit_apps"))?;
 
+        pc.pause_on_lid_close = opt_bool(rc, format!("{name}.pause_on_lid_close"))?;
         // lid action profile overrides (None = no override, Some(None) = clear, Some(Some(cmd)) = set)
         pc.lid_close_action = parse_lid_action_override(rc, &format!("{name}.lid_close_action"))?;
         pc.lid_open_action = parse_lid_action_override(rc, &format!("{name}.lid_open_action"))?;
@@ -699,6 +702,7 @@ fn log_config_debug(cfg_file: &ConfigFile) {
         cfg.low_power_when_idle_timeout
     );
 
+    eventline::debug!("  pause_on_lid_close = {}", cfg.pause_on_lid_close);
     eventline::debug!("  lid_close_action = {:?}", cfg.lid_close_action);
     eventline::debug!("  lid_open_action  = {:?}", cfg.lid_open_action);
 
@@ -797,6 +801,41 @@ mod tests {
     fn parse(contents: &str) -> Result<ConfigFile, String> {
         let rc = RuneConfig::from_str(contents).expect("test config should be valid Rune");
         parse_config_file(&rc)
+    }
+
+    #[test]
+    fn lid_grace_example_has_ten_second_plans_on_both_power_sources() {
+        let cfg = parse(include_str!("../../examples/lid-grace-period.rune")).unwrap();
+        for source in [PlanSource::Ac, PlanSource::Battery] {
+            let effective = cfg.effective_for(None, source).unwrap();
+            assert!(!effective.pause_on_lid_close);
+            assert!(effective.enable_loginctl_integration);
+            assert_eq!(effective.plan.len(), 1);
+            assert!(matches!(
+                effective.plan[0].kind,
+                crate::core::config::PlanStepKind::Suspend
+            ));
+            assert_eq!(effective.plan[0].timeout_seconds, 10);
+        }
+    }
+
+    #[test]
+    fn lid_pause_defaults_and_profile_overrides_parse_and_merge() {
+        assert!(parse("default:\nend\n").unwrap().default.pause_on_lid_close);
+        let cfg = parse("default:\n  pause_on_lid_close false\nend\ndocked:\n  mode \"overlay\"\n  pause_on_lid_close true\nend\nmobile:\n  mode \"fresh\"\n  pause_on_lid_close false\nend\n").unwrap();
+        assert!(!cfg.default.pause_on_lid_close);
+        assert!(
+            cfg.effective_for(Some("docked"), PlanSource::Desktop)
+                .unwrap()
+                .pause_on_lid_close
+        );
+        assert!(
+            !cfg.effective_for(Some("mobile"), PlanSource::Desktop)
+                .unwrap()
+                .pause_on_lid_close
+        );
+        assert!(parse("default:\n  pause_on_lid_close 123\nend\n").is_err());
+        assert!(parse("default:\nend\nbroken:\n  pause_on_lid_close \"false\"\nend\n").is_err());
     }
 
     #[test]

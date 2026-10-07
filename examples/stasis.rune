@@ -23,6 +23,9 @@ default:
   # Controller buttons, sticks, triggers and D-pad count as activity.
   # Requires read access to controller /dev/input/event* devices.
   monitor_gamepad true
+
+  # Keep the historical lid pause; false starts the plan when the lid closes.
+  pause_on_lid_close true
   monitor_media true
   ignore_remote_media true
   # Matching media blocks only suspend; other eligible media pauses the full plan.
@@ -43,7 +46,9 @@ default:
   # Lid actions (optional, laptop only)
   #
   # Shell commands run immediately on lid close or open.
-  # Lid close/open also pause/resume the plan timers regardless.
+  # By default lid closure pauses timers. With pause_on_lid_close false,
+  # closure starts a fresh countdown; reopening cancels it.
+  # See examples/lid-grace-period.rune for suspend after a short grace period.
   #
   # These live under `default:` (global) so they apply for both
   # `default.ac:` and `default.battery:` without duplicating them.
@@ -245,6 +250,9 @@ presentation:
   enable_dbus_inhibit true
   pre_suspend_command None
   monitor_gamepad true
+
+  # Keep the historical lid pause; false starts the plan when the lid closes.
+  pause_on_lid_close true
   monitor_media false
   ignore_remote_media true
   debounce_seconds 0

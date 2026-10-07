@@ -94,6 +94,9 @@ default:
   # Count controller buttons/sticks/triggers as activity (needs device read access).
   monitor_gamepad true
 
+  # Keep the historical lid pause; false starts the plan when the lid closes.
+  pause_on_lid_close true
+
   # Non-browser media/audio inhibit only. Browser/media-tab inhibit is handled
   # by enable_dbus_inhibit above.
   monitor_media true
@@ -164,7 +167,9 @@ default:
   # Lid actions (LAPTOP ONLY)
   #
   # Shell commands run immediately on lid close or open.
-  # Lid close/open also pause/resume the plan timers regardless.
+  # By default lid closure pauses timers. With pause_on_lid_close false,
+  # closure starts a fresh countdown; reopening cancels it.
+  # See examples/lid-grace-period.rune for suspend after a short grace period.
   #
   # These are GLOBAL under `default:` so they apply to BOTH `ac:` and `battery:` plans.
   # A profile can override them or clear them (set to "").
@@ -264,6 +269,9 @@ default:
 
   # Count controller buttons/sticks/triggers as activity (needs device read access).
   monitor_gamepad true
+
+  # Keep the historical lid pause; false starts the plan when the lid closes.
+  pause_on_lid_close true
 
   # Non-browser media/audio inhibit only. Browser/media-tab inhibit is handled
   # by enable_dbus_inhibit above.

@@ -138,6 +138,8 @@ pub struct Config {
     /// Seconds to wait after DPMS fires before entering low-power mode.
     pub low_power_when_idle_timeout: u64,
 
+    /// Pause the idle plan while the lid is closed; false starts a fresh countdown.
+    pub pause_on_lid_close: bool,
     /// Shell command to run immediately when the lid is closed (if any).
     pub lid_close_action: Option<String>,
     /// Shell command to run immediately when the lid is opened (if any).
@@ -200,6 +202,7 @@ impl Config {
             low_power_when_idle: false,
             low_power_when_idle_timeout: 0,
 
+            pause_on_lid_close: true,
             lid_close_action: None,
             lid_open_action: None,
 
@@ -381,6 +384,7 @@ pub struct PartialConfig {
     pub low_power_when_idle: Option<bool>,
     pub low_power_when_idle_timeout: Option<u64>,
 
+    pub pause_on_lid_close: Option<bool>,
     /// `None` = no override; `Some(None)` = clear; `Some(Some(cmd))` = set command.
     pub lid_close_action: Option<Option<String>>,
     pub lid_open_action: Option<Option<String>>,
@@ -455,6 +459,9 @@ impl PartialConfig {
             base.low_power_when_idle_timeout = v;
         }
 
+        if let Some(v) = self.pause_on_lid_close {
+            base.pause_on_lid_close = v;
+        }
         if let Some(v) = &self.lid_close_action {
             base.lid_close_action = v.clone();
         }

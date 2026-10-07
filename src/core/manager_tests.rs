@@ -1604,3 +1604,420 @@ fn profile_change_clears_stale_counts_and_reclassifies_media() {
     assert_eq!(state.media_inhibitor_count(), 0);
     assert_eq!(state.suspend_media_inhibitor_count(), 1);
 }
+
+// These tests drive the production manager with simulated hardware events and
+// a clock. Actions are inspected, never executed: no actual lock/DPMS/suspend.
+fn lid_grace_config() -> ConfigFile {
+    let mut cfg = cfg_with_plan(vec![step(PlanStepKind::Suspend, 10, "sleep")]);
+    cfg.default.pause_on_lid_close = false;
+    cfg.default.debounce_seconds = 5; // a closed lid needs no compositor debounce
+    cfg.default.lid_close_action = Some("lock-and-off".into());
+    cfg.default.lid_open_action = Some("on".into());
+    cfg
+}
+
+fn command(command: &str) -> Action {
+    Action::RunCommand {
+        command: command.into(),
+    }
+}
+
+#[test]
+fn lid_close_starts_ten_second_grace_period_without_compositor_idle() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    // The same event comes from the initial UPower read when already closed.
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::LidClosed { now_ms: 100 })
+            .unwrap(),
+        vec![command("lock-and-off")]
+    );
+    assert!(!state.paused());
+    assert!(!state.debounce_pending());
+    assert!(!state.compositor_idle()); // lid state is independent evidence
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 10_099 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 10_100 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn reopening_at_nine_seconds_cancels_suspend_and_resumes_display() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 0 })
+        .unwrap();
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::LidOpened { now_ms: 9_000 })
+            .unwrap(),
+        vec![command("on")]
+    );
+    assert!(!state.lid_closed());
+    assert!(state.debounce_pending());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    // Another close receives the full grace period.
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 60_000 })
+        .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 69_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 70_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn duplicate_lid_and_compositor_edges_do_not_restart_closed_countdown() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 0 })
+        .unwrap();
+    for event in [
+        Event::LidClosed { now_ms: 3_000 },
+        Event::CompositorIdled { now_ms: 4_000 },
+        Event::CompositorResumed { now_ms: 5_000 },
+        Event::LidClosed { now_ms: 9_000 },
+    ] {
+        assert!(mgr.handle_event(&mut state, event).unwrap().is_empty());
+    }
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 10_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn default_closed_lid_pauses_and_wake_does_not_release_the_lid_hold() {
+    let mut cfg = lid_grace_config();
+    cfg.default.pause_on_lid_close = true;
+    let mut mgr = Manager::new(cfg);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::LidClosed { now_ms: 100 })
+            .unwrap(),
+        vec![command("lock-and-off")]
+    );
+    assert!(state.paused());
+    mgr.handle_event(&mut state, Event::PrepareForSleep { now_ms: 200 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::ResumedFromSleep { now_ms: 30_000 })
+        .unwrap();
+    assert!(state.system_paused());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(&mut state, Event::LidOpened { now_ms: 60_001 })
+        .unwrap();
+    assert!(!state.system_paused());
+    assert!(state.debounce_pending());
+}
+
+#[test]
+fn opening_lid_during_sleep_does_not_release_sleep_hold() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 0 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::PrepareForSleep { now_ms: 1_000 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::LidOpened { now_ms: 2_000 })
+        .unwrap();
+    assert!(state.system_paused());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(&mut state, Event::ResumedFromSleep { now_ms: 60_001 })
+        .unwrap();
+    assert!(!state.system_paused());
+    assert!(state.debounce_pending());
+}
+
+#[test]
+fn wake_while_closed_relocks_and_starts_a_fresh_grace_period() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 0 })
+        .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::SessionLocked {
+            source: LockSource::LockedHint,
+            now_ms: 1,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 10_000 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::PrepareForSleep { now_ms: 10_100 })
+        .unwrap();
+    // Startup/wake re-reads may repeat a closed value, which must be harmless.
+    assert!(
+        mgr.handle_event(&mut state, Event::LidClosed { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::ResumedFromSleep { now_ms: 60_000 })
+            .unwrap(),
+        vec![command("lock-and-off")]
+    );
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 69_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 70_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn closed_lid_respects_manual_app_browser_and_suspend_only_holds() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 0 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 1_000 })
+        .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(&mut state, Event::ManualResume { now_ms: 60_000 })
+        .unwrap();
+    assert!(!state.debounce_pending());
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 1,
+            suspend_count: 0,
+            now_ms: 65_000,
+        },
+    )
+    .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 90_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 0,
+            now_ms: 90_000,
+        },
+    )
+    .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 94_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 95_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::BrowserActivity { now_ms: 0 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 1_000 })
+        .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(&mut state, Event::BrowserInactive { now_ms: 60_000 })
+        .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 1,
+            now_ms: 65_000,
+        },
+    )
+    .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 90_000 })
+            .unwrap()
+            .is_empty()
+    );
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 0,
+            suspend_count: 0,
+            now_ms: 90_000,
+        },
+    )
+    .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 94_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 95_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn closed_lid_policy_applies_on_profile_reload_and_power_changes() {
+    let mut cfg = lid_grace_config();
+    cfg.profiles.push(Profile {
+        name: "dock".into(),
+        mode: ProfileMode::Overlay,
+        config: PartialConfig {
+            pause_on_lid_close: Some(true),
+            ..Default::default()
+        },
+    });
+    cfg.default.plan_ac = cfg.default.plan_desktop.clone();
+    cfg.default.plan_battery = cfg.default.plan_desktop.clone();
+    let mut mgr = Manager::new(cfg.clone());
+    let mut state = State::new(0);
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 0 })
+        .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::ProfileChanged {
+            name: "dock".into(),
+            now_ms: 1_000,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    mgr.handle_event(
+        &mut state,
+        Event::ProfileChanged {
+            name: "none".into(),
+            now_ms: 2_000,
+        },
+    )
+    .unwrap();
+    assert!(!state.paused());
+    assert!(!state.debounce_pending());
+    mgr.handle_event(
+        &mut state,
+        Event::PowerChanged {
+            state: crate::core::events::PowerState::OnBattery,
+            now_ms: 3_000,
+        },
+    )
+    .unwrap();
+    assert!(!state.debounce_pending());
+    cfg.default.pause_on_lid_close = true;
+    mgr.set_config(cfg.clone());
+    mgr.handle_event(
+        &mut state,
+        Event::ProfileChanged {
+            name: "none".into(),
+            now_ms: 4_000,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    cfg.default.pause_on_lid_close = false;
+    mgr.set_config(cfg);
+    mgr.handle_event(
+        &mut state,
+        Event::ProfileChanged {
+            name: "none".into(),
+            now_ms: 5_000,
+        },
+    )
+    .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 14_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 15_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn closed_lid_can_run_dpms_resume_without_unlocking_session() {
+    let mut cfg = lid_grace_config();
+    let mut off = step(PlanStepKind::Dpms, 1, "off");
+    off.resume_command = Some("restore-display".into());
+    cfg.default.plan_desktop = vec![
+        step(PlanStepKind::LockScreen, 1, "lock"),
+        off,
+        step(PlanStepKind::Suspend, 10, "sleep"),
+    ];
+    let mut mgr = Manager::new(cfg);
+    let mut state = State::new(0);
+    state.set_locked(true);
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 0 })
+        .unwrap();
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 1_000 })
+            .unwrap(),
+        vec![command("off")]
+    );
+    let actions = mgr
+        .handle_event(&mut state, Event::LidOpened { now_ms: 9_000 })
+        .unwrap();
+    assert!(actions.contains(&Action::RunResumeCommand {
+        command: "restore-display".into()
+    }));
+    assert!(state.is_locked());
+    assert!(state.debounce_pending());
+}
+
+#[test]
+fn lid_opt_out_still_requires_compositor_idle_while_open() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    assert!(state.debounce_pending());
+    enter_idle(&mut mgr, &mut state, 60_000);
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 69_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 70_000 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}

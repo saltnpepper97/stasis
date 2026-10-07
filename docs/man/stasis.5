@@ -145,9 +145,26 @@ Optional command run immediately when logind emits PrepareForSleep(true).
 This triggers when sleep is initiated externally (e.g., closing lid, systemctl suspend), not by stasis's idle plan.
 
 .TP
+.B pause_on_lid_close true|false
+Default \fBtrue\fR pauses the idle plan while the lid is closed.
+With \fBfalse\fR, lid closure starts a fresh countdown using the current plan,
+without waiting for compositor idle or its debounce interval. Manual pauses and
+inhibitors still apply. Lid opening cancels that countdown and resumes normal
+compositor-driven idle handling. Profiles may override this setting.
+The same plan runs for ordinary idle and lid closure; sequential step timeouts
+and notifications still apply.
+Enable \fBenable_loginctl_integration true\fR to restart the countdown and rerun
+the close command when waking with the lid still closed. Current lid state is
+also read at startup. Opening the lid does not unlock the session.
+Logind and any desktop power manager must permit lid closure without immediately
+suspending; Stasis does not change their settings.
+
+.TP
 .B lid_close_action \fICOMMAND\fR | ""
 Optional command run immediately when the laptop lid closes.
 Setting this to an empty string (\fB""\fR) clears any inherited lid-close action.
+This command must return promptly so plan timers can continue. For a foreground
+locker, use its detach option or a session lock request.
 
 .TP
 .B lid_open_action \fICOMMAND\fR | ""
@@ -328,7 +345,8 @@ suspend is the next runnable step. Earlier actions and hardware low-power mode
 continue. When the last suspend-only inhibitor clears, the remaining timeout
 resumes. Explicit \fBstasis trigger suspend\fR commands are not blocked.
 
-Lid close/open pause/resume plan timers regardless of any configured lid actions.
+Lid closure pauses plan timers by default; \fBpause_on_lid_close false\fR instead
+starts a fresh countdown while closed. Lid opening cancels it.
 If \fBlid_close_action\fR/\fBlid_open_action\fR are set, their commands run immediately
 on the respective lid event.
 

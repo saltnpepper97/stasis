@@ -168,6 +168,30 @@ through the login1 interface provided by systemd-logind and eLogind.
 
 ---
 
+## Lid-close Grace Period
+
+By default, `pause_on_lid_close true` pauses the plan while a laptop lid is
+closed. Set it to `false` to start a fresh countdown on lid closure, even if
+the compositor has not reported idle. Opening the lid cancels that countdown,
+runs `lid_open_action` and any applicable plan resume commands, and waits for
+normal compositor idle again. Manual pauses and inhibitors still apply.
+
+`lid_close_action` runs immediately. For lock + display-off followed by suspend
+after 10 seconds, use a close command that returns promptly and a suspend step
+with `timeout 10`. See [the complete laptop example](examples/lid-grace-period.rune).
+This runs the same configured plan used for ordinary idle, including its
+sequential step timeouts and notifications; it does not create a separate lid plan.
+
+Stasis reads UPower's current lid state on startup. Enable
+`enable_loginctl_integration true` for wake handling: waking with the lid still
+closed reruns the close command and starts another countdown. Opening the lid
+does not unlock the session.
+
+For Stasis to control the grace period, logind and any desktop power manager
+must allow lid closure without immediately suspending. See
+[logind's lid settings](https://www.freedesktop.org/software/systemd/man/latest/logind.conf.html).
+Stasis does not change those system settings.
+
 ## Gamepad Activity
 
 `monitor_gamepad true` (the default) counts Linux controller buttons, D-pad,

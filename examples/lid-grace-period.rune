@@ -1,0 +1,31 @@
+# Laptop grace-period example for niri + swaylock; adapt commands to your session.
+# logind/your desktop must leave lid handling to Stasis rather than suspend immediately.
+# This example also suspends after 10 seconds of normal idle while the lid is open.
+# Lid closure restarts that same plan; there is no separate closed-lid plan.
+default:
+  enable_loginctl_integration true
+  pause_on_lid_close false
+  monitor_gamepad true
+  monitor_media false
+  inhibit_apps [ ]
+  suspend_inhibit_apps [ ]
+  suspend_inhibit_media [ ]
+
+  # Lid commands must return promptly: swaylock -f detaches after locking.
+  lid_close_action "swaylock -f; niri msg action power-off-monitors"
+  lid_open_action "niri msg action power-on-monitors"
+
+  ac:
+    suspend:
+      timeout 10
+      command "systemctl suspend"
+    end
+  end
+
+  battery:
+    suspend:
+      timeout 10
+      command "systemctl suspend"
+    end
+  end
+end
