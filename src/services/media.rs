@@ -257,9 +257,7 @@ impl MediaService {
                     eventline::warn!("media: audio query failed (keeping previous): {}", error);
                 }
                 self.audio_error = Some(error);
-                if self.last_counts.is_none() {
-                    return None;
-                }
+                self.last_counts?;
             }
         }
         let sources = audio_stream_sources(

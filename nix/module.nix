@@ -23,12 +23,13 @@ let
   ];
 
   # Packages added to the service PATH (systemd.user.services.<name>.path expects packages).
-  # Include pulseaudio so `pactl` is available for media detection on PipeWire Pulse setups.
+  # Native PipeWire tools are preferred; pactl supports genuine PulseAudio.
   baseServicePathPkgs = with pkgs; [
     bashInteractive
     coreutils
     libnotify
     systemd
+    pipewire
     pulseaudio
   ];
 in
@@ -99,7 +100,7 @@ in
         example = literalExpression ''with pkgs; [ playerctl swaylock brightnessctl ]'';
         description = ''
           Extra packages added to the Stasis systemd user service PATH.
-          (The module already includes `pulseaudio` so `pactl` is available.)
+          (The module includes `pipewire` for `pw-dump` and `pulseaudio` for native `pactl`.)
         '';
       };
 
