@@ -728,6 +728,7 @@ pub async fn run_games(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     struct NativeGame {
         root: PathBuf,
@@ -746,7 +747,18 @@ mod tests {
             ));
             std::fs::create_dir_all(&root).unwrap();
             let exe = root.join("test-game");
-            std::fs::copy("/usr/bin/sleep", &exe).unwrap();
+            // Nix supplies test tools through PATH rather than /usr/bin.
+            // Copy the executable so process discovery sees a distinct game.
+            let sleep =
+                std::env::split_paths(&std::env::var_os("PATH").expect("test PATH is unset"))
+                    .map(|directory| directory.join("sleep"))
+                    .find(|path| {
+                        path.metadata().is_ok_and(|metadata| {
+                            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                        })
+                    })
+                    .expect("game process tests require sleep on PATH (coreutils)");
+            std::fs::copy(sleep, &exe).unwrap();
             // Parallel tests can fork while another thread holds a copy's
             // writable descriptor. Retry the transient exec-busy condition.
             let mut attempts = 0;

@@ -324,7 +324,7 @@ mod tests {
     #[tokio::test]
     async fn hung_audio_commands_time_out_without_blocking_the_runtime() {
         let started = Instant::now();
-        let command = query("/bin/sh", &["-c", "exec sleep 10"]);
+        let command = query("sleep", &["10"]);
         tokio::pin!(command);
         tokio::select! {
             result = &mut command => panic!("command ended before the timer: {result:?}"),

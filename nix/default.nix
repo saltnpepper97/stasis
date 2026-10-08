@@ -7,6 +7,7 @@
   wayland-protocols,
   dbus,
   pkg-config,
+  coreutils,
 }:
 rustPlatform.buildRustPackage {
   inherit version;
@@ -20,6 +21,10 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [
     pkg-config
+  ];
+
+  nativeCheckInputs = [
+    coreutils
   ];
 
   buildInputs = [
@@ -43,7 +48,10 @@ rustPlatform.buildRustPackage {
       configuration language.
     '';
     homepage = "https://github.com/saltnpepper97/stasis";
-    license = lib.licenses.mit;
+    license = with lib.licenses; [
+      gpl3Only
+      agpl3Only
+    ];
     platforms = lib.platforms.linux;
     mainProgram = name;
   };

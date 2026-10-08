@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nix builds resolve process-test tools through `PATH` with an explicit coreutils test dependency, instead of requiring `/usr/bin/sleep` or `/bin/sh`. Package metadata now lists the source and linked library's GPL/AGPL licenses ([#104](https://github.com/saltnpepper97/stasis/issues/104)).
 - Lid state is read at startup and reconciled before sleep resume, including laptops started or woken with the lid already closed. Duplicate lid/compositor reports do not restart the closed-lid countdown, and opening a lid cannot release an active sleep pause.
 
 - App inhibition on Halley now accepts its current window-list JSON array as well as the legacy wrapped format, restoring game detection for rules such as `steam_app_.*`.
