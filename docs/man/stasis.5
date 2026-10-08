@@ -92,7 +92,8 @@ If true, non-browser media playback can inhibit idle evaluation.
 This setting is separate from D-Bus inhibit monitoring. Browser media inhibit
 is controlled by \fBenable_dbus_inhibit\fR.
 .PP
-Audio monitoring prefers native PipeWire via \fBpw-dump\fR. If unavailable,
+Audio monitoring prefers native PipeWire via a persistent
+\fBpw-dump --monitor\fR connection that receives graph changes. If unavailable,
 it can use JSON-capable \fBpactl\fR against a genuine PulseAudio server.
 Stasis does not require \fBpipewire-pulse\fR and rejects it as a PulseAudio
 fallback. Both media monitoring and browser microphone detection use this
@@ -101,8 +102,9 @@ Stasis process PATH; server/session environment variables are inherited.
 .PP
 Only running, unmuted playback streams are eligible media sources. Browser
 microphone detection requires a running, unmuted browser capture stream.
-Failed queries retain the last valid observation. Each command times out
-within two seconds; unavailable backends are rediscovered every five seconds.
+Disconnects and failed queries retain the last valid observation. The initial
+PipeWire snapshot and PulseAudio commands time out within two seconds;
+unavailable backends are rediscovered every five seconds.
 
 .TP
 .B monitor_games true|false

@@ -5,10 +5,14 @@
 //! PulseAudio connection; the PulseAudio fallback rejects compatibility servers.
 
 use std::collections::HashMap;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AudioBackend {
@@ -44,6 +48,7 @@ pub(super) struct AudioReader {
     backend: Option<AudioBackend>,
     retry_at: Option<Instant>,
     discovery_error: Option<String>,
+    pipewire: Option<PipeWireMonitor>,
 }
 
 impl AudioReader {
@@ -53,7 +58,7 @@ impl AudioReader {
 
     pub(super) async fn read(&mut self, direction: Direction) -> Result<Vec<AudioStream>, String> {
         if let Some(backend) = self.backend {
-            match read_backend(backend, direction).await {
+            match self.read_backend(backend, direction).await {
                 Ok(streams) => return Ok(streams),
                 Err(error) => {
                     self.backend = None;
@@ -71,7 +76,7 @@ impl AudioReader {
                 .unwrap_or_else(|| "no native audio backend".into()));
         }
 
-        let pipewire_error = match read_backend(AudioBackend::PipeWire, direction).await {
+        let pipewire_error = match self.read_backend(AudioBackend::PipeWire, direction).await {
             Ok(streams) => {
                 self.backend = Some(AudioBackend::PipeWire);
                 self.retry_at = None;
@@ -79,7 +84,7 @@ impl AudioReader {
             }
             Err(error) => error,
         };
-        match read_backend(AudioBackend::PulseAudio, direction).await {
+        match self.read_backend(AudioBackend::PulseAudio, direction).await {
             Ok(streams) => {
                 self.backend = Some(AudioBackend::PulseAudio);
                 self.retry_at = None;
@@ -93,29 +98,167 @@ impl AudioReader {
             }
         }
     }
-}
 
-async fn read_backend(
-    backend: AudioBackend,
-    direction: Direction,
-) -> Result<Vec<AudioStream>, String> {
-    match backend {
-        AudioBackend::PipeWire => parse_pipewire(&query("pw-dump", &["--no-colors"]).await?),
-        AudioBackend::PulseAudio => {
-            // Recheck the endpoint on every read, including after a server
-            // restart. Never query streams through pipewire-pulse.
-            let info = query("pactl", &["--format=json", "info"]).await?;
-            require_native_pulse(&info)?;
-            let kind = match direction {
-                Direction::Playback => "sink-inputs",
-                Direction::Capture => "source-outputs",
-            };
-            parse_pulse(
-                &query("pactl", &["--format=json", "list", kind]).await?,
-                direction,
-            )
+    async fn read_backend(
+        &mut self,
+        backend: AudioBackend,
+        direction: Direction,
+    ) -> Result<Vec<AudioStream>, String> {
+        match backend {
+            AudioBackend::PipeWire => {
+                if self.pipewire.is_none() {
+                    self.pipewire = Some(PipeWireMonitor::start()?);
+                }
+                let result = self.pipewire.as_mut().unwrap().read().await;
+                if result.is_err() {
+                    // A reconnect starts with a fresh registry. Preserve the
+                    // consumer's last observation while this one is unknown.
+                    self.pipewire = None;
+                }
+                result
+            }
+            AudioBackend::PulseAudio => read_pulse(direction).await,
         }
     }
+}
+
+// Keep the native connection open instead of launching and parsing a complete
+// PipeWire registry on every media/microphone poll.
+#[derive(Debug)]
+struct PipeWireMonitor {
+    snapshots: watch::Receiver<Option<Result<Vec<AudioStream>, String>>>,
+    task: JoinHandle<()>,
+}
+
+impl PipeWireMonitor {
+    fn start() -> Result<Self, String> {
+        let mut child = Command::new("pw-dump")
+            .args(["--monitor", "--no-colors"])
+            .env("LC_ALL", "C")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| format!("pw-dump monitor: {error}"))?;
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let (tx, snapshots) = watch::channel(None);
+        let task = tokio::spawn(async move {
+            let mut registry = HashMap::new();
+            let mut pending = Vec::new();
+            let mut chunk = [0u8; 16384];
+            let result = async {
+                loop {
+                    let count = stdout
+                        .read(&mut chunk)
+                        .await
+                        .map_err(|error| format!("pw-dump monitor read: {error}"))?;
+                    if count == 0 {
+                        return Err("pw-dump monitor disconnected".to_string());
+                    }
+                    pending.extend_from_slice(&chunk[..count]);
+                    for changes in take_pipewire_batches(&mut pending)? {
+                        update_pipewire_registry(&mut registry, changes)?;
+                        let streams = pipewire_streams(registry.values());
+                        if tx.send(Some(Ok(streams))).is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = tx.send(Some(Err(error)));
+            }
+            // Explicitly reap the helper on an error or receiver shutdown.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        });
+        Ok(Self { snapshots, task })
+    }
+
+    async fn read(&mut self) -> Result<Vec<AudioStream>, String> {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if self.snapshots.has_changed().is_err() {
+                    return Err("pw-dump monitor stopped".into());
+                }
+                if let Some(snapshot) = self.snapshots.borrow().clone() {
+                    return snapshot;
+                }
+                self.snapshots
+                    .changed()
+                    .await
+                    .map_err(|_| "pw-dump monitor stopped".to_string())?;
+            }
+        })
+        .await
+        .map_err(|_| "pw-dump monitor initial snapshot timed out".to_string())?
+    }
+}
+
+impl Drop for PipeWireMonitor {
+    fn drop(&mut self) {
+        self.task.abort(); // Dropping the task also kills its owned child.
+    }
+}
+
+fn take_pipewire_batches(pending: &mut Vec<u8>) -> Result<Vec<Vec<Value>>, String> {
+    // Bound an incomplete/malformed document rather than growing indefinitely.
+    if pending.len() > 16 * 1024 * 1024 {
+        return Err("pw-dump monitor snapshot exceeds 16 MiB".into());
+    }
+    let mut decoder = serde_json::Deserializer::from_slice(pending).into_iter::<Vec<Value>>();
+    let mut batches = Vec::new();
+    let mut consumed = 0;
+    while let Some(batch) = decoder.next() {
+        match batch {
+            Ok(batch) => {
+                batches.push(batch);
+                consumed = decoder.byte_offset();
+            }
+            Err(error) if error.is_eof() => break,
+            Err(error) => return Err(format!("pw-dump monitor JSON: {error}")),
+        }
+    }
+    pending.drain(..consumed);
+    Ok(batches)
+}
+
+fn update_pipewire_registry(
+    registry: &mut HashMap<u64, Value>,
+    changes: Vec<Value>,
+) -> Result<(), String> {
+    for object in changes {
+        let id = object["id"]
+            .as_u64()
+            .ok_or("pw-dump monitor object has no id")?;
+        if object.get("info").is_some_and(Value::is_null) {
+            registry.remove(&id);
+        } else if matches!(
+            object["type"].as_str(),
+            Some("PipeWire:Interface:Client" | "PipeWire:Interface:Node")
+        ) {
+            // pw-dump publishes the full current object for a change, and an
+            // id/info:null tombstone when it disappears. Ignore ports/devices.
+            registry.insert(id, object);
+        }
+    }
+    Ok(())
+}
+
+async fn read_pulse(direction: Direction) -> Result<Vec<AudioStream>, String> {
+    // Recheck the endpoint on every read, including after a server restart.
+    // Never query streams through pipewire-pulse.
+    let info = query("pactl", &["--format=json", "info"]).await?;
+    require_native_pulse(&info)?;
+    let kind = match direction {
+        Direction::Playback => "sink-inputs",
+        Direction::Capture => "source-outputs",
+    };
+    parse_pulse(
+        &query("pactl", &["--format=json", "list", kind]).await?,
+        direction,
+    )
 }
 
 async fn query(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -168,11 +311,16 @@ fn bool_value(value: &Value) -> Option<bool> {
     })
 }
 
+#[cfg(test)]
 fn parse_pipewire(text: &[u8]) -> Result<Vec<AudioStream>, String> {
     let objects: Vec<Value> =
         serde_json::from_slice(text).map_err(|e| format!("pw-dump JSON: {e}"))?;
+    Ok(pipewire_streams(objects.iter()))
+}
+
+fn pipewire_streams<'a>(objects: impl Iterator<Item = &'a Value> + Clone) -> Vec<AudioStream> {
     let clients: HashMap<String, HashMap<String, String>> = objects
-        .iter()
+        .clone()
         .filter(|object| object["type"] == "PipeWire:Interface:Client")
         .map(|object| {
             (
@@ -182,7 +330,7 @@ fn parse_pipewire(text: &[u8]) -> Result<Vec<AudioStream>, String> {
         })
         .collect();
     let mut streams = Vec::new();
-    for object in &objects {
+    for object in objects {
         if object["type"] != "PipeWire:Interface:Node" {
             continue;
         }
@@ -217,7 +365,7 @@ fn parse_pipewire(text: &[u8]) -> Result<Vec<AudioStream>, String> {
             props,
         });
     }
-    Ok(streams)
+    streams
 }
 
 fn parse_pulse(text: &[u8], direction: Direction) -> Result<Vec<AudioStream>, String> {
@@ -245,6 +393,82 @@ mod tests {
             "state":state, "props":{"media.class":class,"application.name":"VLC"},
             "params":{"Props":[{"mute":muted}]}
         }})
+    }
+
+    #[test]
+    fn monitor_decodes_fragmented_consecutive_batches() {
+        let first = json!([{"id":12,"info":{"props":{"application.name":"a ] \\\" b"}}}]);
+        let second = json!([{"id":12,"info":null}]);
+        let wire = format!("{}\n{}\n", first, second);
+        let mut pending = Vec::new();
+        let mut batches = Vec::new();
+        for byte in wire.bytes() {
+            pending.push(byte);
+            batches.extend(take_pipewire_batches(&mut pending).unwrap());
+        }
+        assert_eq!(
+            batches,
+            vec![
+                first.as_array().unwrap().clone(),
+                second.as_array().unwrap().clone()
+            ]
+        );
+        assert!(pending.iter().all(u8::is_ascii_whitespace));
+
+        let mut pending = wire.into_bytes();
+        assert_eq!(take_pipewire_batches(&mut pending).unwrap(), batches);
+    }
+
+    #[test]
+    fn monitor_rejects_invalid_and_unbounded_documents() {
+        assert!(take_pipewire_batches(&mut b"invalid".to_vec()).is_err());
+        assert!(take_pipewire_batches(&mut vec![b' '; 16 * 1024 * 1024 + 1]).is_err());
+        let mut incomplete = br#"[{"id":12,"info":{"props": "#.to_vec();
+        assert!(take_pipewire_batches(&mut incomplete).unwrap().is_empty());
+        assert!(!incomplete.is_empty());
+    }
+
+    #[test]
+    fn monitor_reconciles_state_identity_removals_and_reused_ids() {
+        let mut registry = HashMap::new();
+        let mut stream = node("Stream/Input/Audio", "running", false);
+        stream["id"] = json!(5);
+        stream["info"]["props"] = json!({"media.class":"Stream/Input/Audio","client.id":12});
+        let client = json!({"id":12,"type":"PipeWire:Interface:Client","info":{"props":{"application.process.binary":"firefox"}}});
+        update_pipewire_registry(&mut registry, vec![client.clone(), stream.clone()]).unwrap();
+        let streams = pipewire_streams(registry.values());
+        assert!(streams[0].running && !streams[0].muted);
+        assert_eq!(streams[0].props["application.process.binary"], "firefox");
+
+        stream["info"]["state"] = json!("idle");
+        stream["info"]["params"]["Props"][0]["mute"] = json!(true);
+        update_pipewire_registry(&mut registry, vec![stream]).unwrap();
+        let streams = pipewire_streams(registry.values());
+        assert!(!streams[0].running && streams[0].muted);
+        update_pipewire_registry(
+            &mut registry,
+            vec![json!({"id":5,"info":null}), json!({"id":12,"info":null})],
+        )
+        .unwrap();
+        assert!(pipewire_streams(registry.values()).is_empty());
+
+        let mut replacement = node("Stream/Output/Audio", "running", false);
+        replacement["id"] = json!(5);
+        update_pipewire_registry(&mut registry, vec![replacement]).unwrap();
+        let streams = pipewire_streams(registry.values());
+        assert_eq!(streams[0].direction, Direction::Playback);
+        assert!(!streams[0].props.contains_key("application.process.binary"));
+        assert!(update_pipewire_registry(&mut registry, vec![json!({"info":null})]).is_err());
+    }
+
+    #[tokio::test]
+    async fn disconnected_monitor_does_not_return_its_last_snapshot_as_current() {
+        let (tx, snapshots) = watch::channel(Some(Ok(Vec::new())));
+        let task = tokio::spawn(std::future::pending());
+        let mut monitor = PipeWireMonitor { snapshots, task };
+        assert!(monitor.read().await.unwrap().is_empty());
+        drop(tx);
+        assert!(monitor.read().await.unwrap_err().contains("stopped"));
     }
 
     #[test]
@@ -340,6 +564,10 @@ mod tests {
         let mut reader = AudioReader::default();
         let streams = reader.read(Direction::Playback).await.unwrap();
         assert_eq!(reader.backend, Some(AudioBackend::PipeWire));
+        let monitor = reader.pipewire.as_ref().unwrap().task.id();
+        reader.read(Direction::Capture).await.unwrap();
+        reader.read(Direction::Playback).await.unwrap();
+        assert_eq!(reader.pipewire.as_ref().unwrap().task.id(), monitor);
         println!(
             "backend={}; streams={}",
             reader.backend_name(),

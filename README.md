@@ -331,7 +331,9 @@ Important separation:
 
 Stasis prefers native PipeWire and reads its stream graph through
 [`pw-dump`](https://docs.pipewire.org/page_man_pw-dump_1.html). It connects to
-PipeWire directly; Stasis does not require `pipewire-pulse` or `pactl` on a
+PipeWire directly and keeps `pw-dump --monitor` open to receive graph changes,
+instead of launching a full dump on every media or microphone check. Stasis
+does not require `pipewire-pulse` or `pactl` on a
 PipeWire setup. If native PipeWire is unavailable, it can use `pactl` against a
 genuine PulseAudio server. A PulseAudio compatibility server backed by PipeWire
 is rejected as a fallback. Install the native tools for your selected server;
@@ -343,8 +345,9 @@ The backend is selected automatically without a new config setting. Both
 non-browser media monitoring (`monitor_media`) and browser microphone detection
 (`enable_dbus_inhibit`) use this selection. `PIPEWIRE_REMOTE` and PulseAudio
 server/session environment variables are inherited from the Stasis process.
-Startup logs identify the selected backend. Failed queries preserve the last
-valid observation, have a two-second command timeout, and retry connection;
+Startup logs identify the selected backend. A disconnected monitor or failed
+query preserves the last valid observation and retries connection. The initial
+PipeWire snapshot and PulseAudio commands have a two-second timeout;
 discovery retries every five seconds while no backend is available.
 
 Media monitoring counts running, unmuted playback streams. Capture streams,
