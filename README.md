@@ -126,7 +126,7 @@ Dependencies:
   - used for session and login1 inhibit handling (`enable_dbus_inhibit`)
   - used for portal/browser inhibit traffic
   - used for lid events and suspend/resume integration
-- pulseaudio or pipewire-pulse (runtime, recommended for media/call detection via `pactl`)
+- PipeWire with `pw-dump`, or native PulseAudio using `pactl` (runtime, recommended for media/microphone detection)
 - libnotify (optional, desktop notifications)
 
 Build & install:
@@ -326,6 +326,33 @@ Important separation:
 - `enable_dbus_inhibit` covers browser/app inhibit traffic from session D-Bus and blocking login1 `idle` inhibitors from the system bus.
 - `monitor_media` is only for non-browser media/audio state.
 - Browser media inhibit is not handled by `monitor_media`; it is handled by D-Bus inhibit monitoring.
+
+### Audio backends
+
+Stasis prefers native PipeWire and reads its stream graph through
+[`pw-dump`](https://docs.pipewire.org/page_man_pw-dump_1.html). It connects to
+PipeWire directly; Stasis does not require `pipewire-pulse` or `pactl` on a
+PipeWire setup. If native PipeWire is unavailable, it can use `pactl` against a
+genuine PulseAudio server. A PulseAudio compatibility server backed by PipeWire
+is rejected as a fallback. Install the native tools for your selected server;
+the NixOS and Home Manager modules include both tool sets in the service PATH.
+This controls Stasis's monitoring connection; applications may still use
+`pipewire-pulse` for their own audio.
+
+The backend is selected automatically without a new config setting. Both
+non-browser media monitoring (`monitor_media`) and browser microphone detection
+(`enable_dbus_inhibit`) use this selection. `PIPEWIRE_REMOTE` and PulseAudio
+server/session environment variables are inherited from the Stasis process.
+Startup logs identify the selected backend. Failed queries preserve the last
+valid observation, have a two-second command timeout, and retry connection;
+discovery retries every five seconds while no backend is available.
+
+Media monitoring counts running, unmuted playback streams. Capture streams,
+idle/paused playback, browsers, games, synthetic speech, and system sounds do
+not become media holds. `media_blacklist`, `ignore_remote_media`, and
+`suspend_inhibit_media` retain their filtering behavior. Browser microphone
+holds require a running, unmuted browser capture stream and remain independent
+of non-browser playback and D-Bus request lifetimes.
 
 To let the display turn off without automatically suspending:
 

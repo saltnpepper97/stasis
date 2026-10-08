@@ -2,11 +2,11 @@
 // License: GPL-3.0-only
 
 use std::collections::HashMap;
-use std::process::Command;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 
+use super::audio::{AudioReader, AudioStream, Direction};
 use crate::core::config::Pattern;
 use crate::core::events::Event;
 use crate::core::manager_msg::ManagerMsg;
@@ -20,7 +20,7 @@ pub struct MediaRules {
     pub suspend_inhibit_media: Vec<Pattern>,
 }
 
-/// Spawnable task: polls PulseAudio/PipeWire sink-input state for non-browser,
+/// Spawnable task: polls native PipeWire/PulseAudio playback for non-browser,
 /// non-game media and emits events on change.
 pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiver<MediaRules>) {
     let initial = rules_rx.borrow().clone();
@@ -35,7 +35,7 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
     .with_poll_interval_ms(500);
 
     eventline::info!(
-        "media: started (monitor_media={}, ignore_remote_media={}, blacklist_len={}, suspend_media_len={}, backend={}) [pactl-sink-input-truth]",
+        "media: started (monitor_media={}, ignore_remote_media={}, blacklist_len={}, suspend_media_len={}, backend={}) [native-audio-stream-state]",
         initial.monitor_media,
         initial.ignore_remote_media,
         svc.blacklist_len(),
@@ -46,7 +46,7 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
     if initial.monitor_media {
         svc.force_emit_next();
         let now_ms = crate::core::utils::now_ms();
-        if let Some(evs) = svc.poll(now_ms) {
+        if let Some(evs) = svc.poll(now_ms).await {
             for ev in evs {
                 if tx.send(ManagerMsg::Event(ev)).await.is_err() {
                     return;
@@ -87,7 +87,7 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
                     if monitor_media {
                         svc.force_emit_next();
                         let now_ms = crate::core::utils::now_ms();
-                        if let Some(evs) = svc.poll(now_ms) {
+                        if let Some(evs) = svc.poll(now_ms).await {
                             for ev in evs {
                                 if tx.send(ManagerMsg::Event(ev)).await.is_err() {
                                     return;
@@ -103,7 +103,7 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
                     } else {
                         svc.force_emit_next();
                         let now_ms = crate::core::utils::now_ms();
-                        if let Some(evs) = svc.poll(now_ms) {
+                        if let Some(evs) = svc.poll(now_ms).await {
                             for ev in evs {
                                 if tx.send(ManagerMsg::Event(ev)).await.is_err() {
                                     return;
@@ -121,7 +121,7 @@ pub async fn run_media(tx: mpsc::Sender<ManagerMsg>, mut rules_rx: watch::Receiv
                 }
 
                 let now_ms = crate::core::utils::now_ms();
-                if let Some(evs) = svc.poll(now_ms) {
+                if let Some(evs) = svc.poll(now_ms).await {
                     for ev in evs {
                         if tx.send(ManagerMsg::Event(ev)).await.is_err() {
                             return;
@@ -156,7 +156,9 @@ pub struct MediaService {
     ignore_remote_media: bool,
     media_blacklist: Vec<Pattern>,
     suspend_inhibit_media: Vec<Pattern>,
-    backend: MediaBackend,
+    audio: AudioReader,
+    audio_error: Option<String>,
+    last_streams: Vec<AudioStream>,
 
     poll_interval_ms: u64,
     last_poll_ms: u64,
@@ -165,12 +167,6 @@ pub struct MediaService {
     last_sources: (Vec<String>, Vec<String>),
 
     force_emit: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MediaBackend {
-    Pactl,
-    None,
 }
 
 impl MediaService {
@@ -183,7 +179,9 @@ impl MediaService {
             ignore_remote_media,
             media_blacklist,
             suspend_inhibit_media,
-            backend: detect_backend(),
+            audio: AudioReader::default(),
+            audio_error: None,
+            last_streams: Vec::new(),
             poll_interval_ms: 1000,
             last_poll_ms: 0,
             last_counts: None,
@@ -206,10 +204,7 @@ impl MediaService {
     }
 
     pub fn backend_name(&self) -> &'static str {
-        match self.backend {
-            MediaBackend::Pactl => "pactl",
-            MediaBackend::None => "none",
-        }
+        self.audio.backend_name()
     }
 
     pub fn reconfigure(
@@ -242,31 +237,35 @@ impl MediaService {
         self.last_poll_ms = 0;
     }
 
-    pub fn poll(&mut self, now_ms: u64) -> Option<Vec<Event>> {
+    pub async fn poll(&mut self, now_ms: u64) -> Option<Vec<Event>> {
         if now_ms < self.last_poll_ms.saturating_add(self.poll_interval_ms) {
             return None;
         }
         self.last_poll_ms = now_ms;
 
-        let sources = match self.backend {
-            MediaBackend::Pactl => {
-                match pactl_sink_input_sources(
-                    self.ignore_remote_media,
-                    &self.media_blacklist,
-                    &self.suspend_inhibit_media,
-                ) {
-                    Ok(sources) => sources,
-                    Err(e) => {
-                        eventline::warn!(
-                            "media: pactl sink-input query failed (keeping previous): {}",
-                            e
-                        );
-                        self.last_sources.clone()
-                    }
+        let previous_backend = self.audio.backend_name();
+        match self.audio.read(Direction::Playback).await {
+            Ok(streams) => {
+                if previous_backend != self.audio.backend_name() || self.audio_error.is_some() {
+                    eventline::info!("media: connected to {}", self.audio.backend_name());
                 }
+                self.audio_error = None;
+                self.last_streams = streams;
             }
-            MediaBackend::None => (Vec::new(), Vec::new()),
-        };
+            Err(error) => {
+                if self.audio_error.as_ref() != Some(&error) {
+                    eventline::warn!("media: audio query failed (keeping previous): {}", error);
+                }
+                self.audio_error = Some(error);
+                self.last_counts?;
+            }
+        }
+        let sources = audio_stream_sources(
+            &self.last_streams,
+            self.ignore_remote_media,
+            &self.media_blacklist,
+            &self.suspend_inhibit_media,
+        );
 
         let counts = (sources.0.len() as u64, sources.1.len() as u64);
 
@@ -323,141 +322,36 @@ impl MediaService {
     }
 }
 
-fn session_env_cmd(program: &str) -> Command {
-    let mut cmd = Command::new(program);
-    // Forward session env vars so pactl can reach PipeWire/PulseAudio when
-    // stasis is running as a systemd user service or otherwise outside the
-    // user session environment.
-    for var in &[
-        "PULSE_SERVER",
-        "PULSE_RUNTIME_PATH",
-        "XDG_RUNTIME_DIR",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "WAYLAND_DISPLAY",
-        "DISPLAY",
-    ] {
-        if let Ok(val) = std::env::var(var) {
-            cmd.env(var, val);
-        }
-    }
-    cmd
-}
-
-fn detect_backend() -> MediaBackend {
-    if pactl_available() {
-        return MediaBackend::Pactl;
-    }
-
-    MediaBackend::None
-}
-
-fn pactl_available() -> bool {
-    session_env_cmd("pactl")
-        .arg("info")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn pactl_sink_input_sources(
-    ignore_remote_media: bool,
-    media_blacklist: &[Pattern],
-    suspend_inhibit_media: &[Pattern],
-) -> Result<(Vec<String>, Vec<String>), String> {
-    let out = session_env_cmd("pactl")
-        .args(["list", "sink-inputs"])
-        .output()
-        .map_err(|e| format!("pactl spawn failed: {e}"))?;
-
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("pactl list sink-inputs failed: {}", err.trim()));
-    }
-
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(pactl_text_sources(
-        &text,
-        ignore_remote_media,
-        media_blacklist,
-        suspend_inhibit_media,
-    ))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MediaInhibitKind {
     Full,
     Suspend,
 }
 
-#[cfg(test)]
-fn pactl_text_counts(
-    text: &str,
-    ignore_remote_media: bool,
-    media_blacklist: &[Pattern],
-    suspend_inhibit_media: &[Pattern],
-) -> (u64, u64) {
-    let sources = pactl_text_sources(
-        text,
-        ignore_remote_media,
-        media_blacklist,
-        suspend_inhibit_media,
-    );
-    (sources.0.len() as u64, sources.1.len() as u64)
-}
-
-fn pactl_text_sources(
-    text: &str,
+fn audio_stream_sources(
+    streams: &[AudioStream],
     ignore_remote_media: bool,
     media_blacklist: &[Pattern],
     suspend_inhibit_media: &[Pattern],
 ) -> (Vec<String>, Vec<String>) {
-    if text.trim().is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
     let mut sources = (Vec::new(), Vec::new());
-    let mut block = String::new();
-    let mut saw_header = false;
-
-    let collect_block = |block: &str, sources: &mut (Vec<String>, Vec<String>)| {
-        let Some(kind) = sink_input_inhibit_kind(
-            block,
+    for stream in streams {
+        let Some(kind) = audio_stream_inhibit_kind(
+            stream,
             ignore_remote_media,
             media_blacklist,
             suspend_inhibit_media,
         ) else {
-            return;
+            continue;
         };
-        let props = parse_pactl_properties(block);
-        let label = media_source_label(&props);
+        let label = media_source_label(&stream.props);
         match kind {
             MediaInhibitKind::Full => sources.0.push(label),
             MediaInhibitKind::Suspend => sources.1.push(label),
         }
-    };
-
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        let is_header = trimmed.starts_with("Sink Input #") || trimmed.starts_with("SinkInput #");
-
-        if is_header {
-            if saw_header {
-                collect_block(&block, &mut sources);
-            }
-            block.clear();
-            saw_header = true;
-        }
-
-        if saw_header {
-            block.push_str(line);
-            block.push('\n');
-        }
     }
-
-    if saw_header {
-        collect_block(&block, &mut sources);
-    }
-
+    sources.0.sort();
+    sources.1.sort();
     sources
 }
 
@@ -476,54 +370,49 @@ fn media_source_label(props: &HashMap<String, String>) -> String {
     "unresolved media stream".to_string()
 }
 
-fn sink_input_inhibit_kind(
-    block: &str,
+fn audio_stream_inhibit_kind(
+    stream: &AudioStream,
     ignore_remote_media: bool,
     media_blacklist: &[Pattern],
     suspend_inhibit_media: &[Pattern],
 ) -> Option<MediaInhibitKind> {
-    let props = parse_pactl_properties(block);
-
-    if props.is_empty() {
-        return None;
-    }
-
-    if sink_input_is_corked(block) {
-        return None;
-    }
-
-    if sink_input_is_muted(block) {
+    let props = &stream.props;
+    if stream.direction != Direction::Playback
+        || !stream.running
+        || stream.muted
+        || props.is_empty()
+    {
         return None;
     }
 
     // Browser/media-session ownership belongs in dbus.rs. media.rs should only
     // act as a narrow local-audio fallback, so aggressively exclude browser,
     // TTS/synthetic, and other system-ish streams here.
-    if sink_input_is_browser(&props) {
+    if audio_stream_is_browser(props) {
         return None;
     }
 
-    if sink_input_is_synthetic_or_tts(&props) {
+    if audio_stream_is_synthetic_or_tts(props) {
         return None;
     }
 
-    if sink_input_is_systemish(&props) {
+    if audio_stream_is_systemish(props) {
         return None;
     }
 
-    if sink_input_is_game(&props) {
+    if audio_stream_is_game(props) {
         return None;
     }
 
-    if sink_input_is_blacklisted(media_blacklist, &props) {
+    if audio_stream_is_blacklisted(media_blacklist, props) {
         return None;
     }
 
-    if ignore_remote_media && sink_input_is_remote(&props) {
+    if ignore_remote_media && audio_stream_is_remote(props) {
         return None;
     }
 
-    let hay_lc = sink_input_haystack(&props);
+    let hay_lc = audio_stream_haystack(props);
     if suspend_inhibit_media
         .iter()
         .any(|pattern| pattern.matches_lc(&hay_lc))
@@ -534,58 +423,7 @@ fn sink_input_inhibit_kind(
     }
 }
 
-fn sink_input_is_corked(block: &str) -> bool {
-    block.lines().any(|line| {
-        let t = line.trim();
-        t.eq_ignore_ascii_case("Corked: yes")
-    })
-}
-
-fn sink_input_is_muted(block: &str) -> bool {
-    block.lines().any(|line| {
-        let t = line.trim();
-        t.eq_ignore_ascii_case("Mute: yes")
-    })
-}
-
-fn parse_pactl_properties(block: &str) -> HashMap<String, String> {
-    let mut props = HashMap::new();
-    let mut in_properties = false;
-
-    for line in block.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == "Properties:" {
-            in_properties = true;
-            continue;
-        }
-
-        if !in_properties {
-            continue;
-        }
-
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if !line.starts_with('\t') && !line.starts_with(' ') {
-            break;
-        }
-
-        let Some((k, v)) = trimmed.split_once('=') else {
-            continue;
-        };
-
-        let key = k.trim().to_ascii_lowercase();
-        let value = v.trim().trim_matches('"').to_string();
-
-        props.insert(key, value);
-    }
-
-    props
-}
-
-fn sink_input_is_synthetic_or_tts(props: &HashMap<String, String>) -> bool {
+fn audio_stream_is_synthetic_or_tts(props: &HashMap<String, String>) -> bool {
     const NEEDLES: &[&str] = &[
         "speech-dispatcher",
         "speech dispatcher",
@@ -603,10 +441,10 @@ fn sink_input_is_synthetic_or_tts(props: &HashMap<String, String>) -> bool {
         "accessibility",
     ];
 
-    haystack_contains_any(&sink_input_identity_haystack(props), NEEDLES)
+    haystack_contains_any(&audio_stream_identity_haystack(props), NEEDLES)
 }
 
-fn sink_input_is_systemish(props: &HashMap<String, String>) -> bool {
+fn audio_stream_is_systemish(props: &HashMap<String, String>) -> bool {
     const NEEDLES: &[&str] = &[
         "event sound",
         "notification",
@@ -616,25 +454,22 @@ fn sink_input_is_systemish(props: &HashMap<String, String>) -> bool {
         "beep",
         "xdg-desktop-portal",
         "wireplumber",
-        // "pipewire" intentionally omitted — matches "pipewire-pulse" in
-        // client.api on every PipeWire sink input; wireplumber covers the
-        // internal streams we actually want to exclude
     ];
 
-    haystack_contains_any(&sink_input_identity_haystack(props), NEEDLES)
+    haystack_contains_any(&audio_stream_identity_haystack(props), NEEDLES)
 }
 
-fn sink_input_is_blacklisted(blacklist: &[Pattern], props: &HashMap<String, String>) -> bool {
+fn audio_stream_is_blacklisted(blacklist: &[Pattern], props: &HashMap<String, String>) -> bool {
     if blacklist.is_empty() {
         return false;
     }
 
-    let hay_lc = sink_input_haystack(props);
+    let hay_lc = audio_stream_haystack(props);
 
     blacklist.iter().any(|p| p.matches_lc(&hay_lc))
 }
 
-fn sink_input_is_browser(props: &HashMap<String, String>) -> bool {
+pub(super) fn audio_stream_is_browser(props: &HashMap<String, String>) -> bool {
     const NEEDLES: &[&str] = &[
         "firefox",
         "chromium",
@@ -653,10 +488,10 @@ fn sink_input_is_browser(props: &HashMap<String, String>) -> bool {
         "librewolf",
     ];
 
-    haystack_contains_any(&sink_input_identity_haystack(props), NEEDLES)
+    haystack_contains_any(&audio_stream_identity_haystack(props), NEEDLES)
 }
 
-fn sink_input_is_game(props: &HashMap<String, String>) -> bool {
+fn audio_stream_is_game(props: &HashMap<String, String>) -> bool {
     const NEEDLES: &[&str] = &[
         "steam",
         "gamescope",
@@ -675,10 +510,10 @@ fn sink_input_is_game(props: &HashMap<String, String>) -> bool {
         "ryujinx",
     ];
 
-    haystack_contains_any(&sink_input_identity_haystack(props), NEEDLES)
+    haystack_contains_any(&audio_stream_identity_haystack(props), NEEDLES)
 }
 
-fn sink_input_is_remote(props: &HashMap<String, String>) -> bool {
+fn audio_stream_is_remote(props: &HashMap<String, String>) -> bool {
     const NEEDLES: &[&str] = &[
         "spotify connect",
         "chromecast",
@@ -697,14 +532,14 @@ fn sink_input_is_remote(props: &HashMap<String, String>) -> bool {
         "icy://",
     ];
 
-    haystack_contains_any(&sink_input_identity_haystack(props), NEEDLES)
+    haystack_contains_any(&audio_stream_identity_haystack(props), NEEDLES)
 }
 
 /// Haystack restricted to identity fields only (process binary, app name, etc).
 /// Use this for browser/game/systemish/tts/remote filters so that technical
-/// plumbing fields like `client.api = "pipewire-pulse"` can never cause false
+/// plumbing fields like `client.api` can never cause false
 /// positives.
-fn sink_input_identity_haystack(props: &HashMap<String, String>) -> String {
+fn audio_stream_identity_haystack(props: &HashMap<String, String>) -> String {
     let identity_keys = [
         "application.name",
         "application.process.binary",
@@ -728,7 +563,7 @@ fn sink_input_identity_haystack(props: &HashMap<String, String>) -> String {
     parts.join(" ").to_lowercase()
 }
 
-fn sink_input_haystack(props: &HashMap<String, String>) -> String {
+fn audio_stream_haystack(props: &HashMap<String, String>) -> String {
     let ordered_keys = [
         "application.name",
         "application.process.binary",
@@ -797,75 +632,74 @@ mod tests {
         Pattern::Literal(value.to_string())
     }
 
+    fn stream(name: &str) -> AudioStream {
+        AudioStream {
+            direction: Direction::Playback,
+            running: true,
+            muted: false,
+            props: HashMap::from([("application.name".into(), name.into())]),
+        }
+    }
+
     #[test]
     fn counts_full_and_suspend_only_streams_separately() {
-        let text = r#"
-Sink Input #1
-    Corked: no
-    Mute: no
-    Properties:
-        application.name = "Spotify"
-        media.title = "Album"
-Sink Input #2
-    Corked: no
-    Mute: no
-    Properties:
-        application.name = "VLC media player"
-        media.title = "Film"
-"#;
-
+        let sources = audio_stream_sources(
+            &[stream("Spotify"), stream("VLC media player")],
+            false,
+            &[],
+            &[literal("spotify")],
+        );
         assert_eq!(
-            pactl_text_counts(text, false, &[], &[literal("spotify")]),
-            (1, 1)
+            sources,
+            (vec!["VLC media player".into()], vec!["Spotify".into()])
         );
     }
 
     #[test]
     fn blacklist_and_remote_filters_take_precedence_over_suspend_rules() {
-        let text = r#"
-Sink Input #1
-    Corked: no
-    Mute: no
-    Properties:
-        application.name = "Spotify"
-Sink Input #2
-    Corked: no
-    Mute: no
-    Properties:
-        application.name = "Spotify Connect"
-"#;
+        let streams = [stream("Spotify"), stream("Spotify Connect")];
         let suspend = [literal("spotify")];
-
         assert_eq!(
-            pactl_text_counts(text, true, &[literal("spotify")], &suspend),
-            (0, 0)
+            audio_stream_sources(&streams, true, &[literal("spotify")], &suspend),
+            (vec![], vec![])
         );
-        assert_eq!(pactl_text_counts(text, true, &[], &suspend), (0, 1));
+        assert_eq!(
+            audio_stream_sources(&streams, true, &[], &suspend),
+            (vec![], vec!["Spotify".into()])
+        );
     }
 
     #[test]
-    fn inactive_and_browser_streams_are_not_inhibitors() {
-        let text = r#"
-Sink Input #1
-    Corked: yes
-    Mute: no
-    Properties:
-        application.name = "Spotify"
-Sink Input #2
-    Corked: no
-    Mute: yes
-    Properties:
-        application.name = "VLC media player"
-Sink Input #3
-    Corked: no
-    Mute: no
-    Properties:
-        application.name = "Firefox"
-"#;
-
+    fn inactive_capture_browser_game_and_system_streams_are_not_inhibitors() {
+        let mut paused = stream("Spotify");
+        paused.running = false;
+        let mut muted = stream("VLC media player");
+        muted.muted = true;
+        let mut capture = stream("Recorder");
+        capture.direction = Direction::Capture;
+        let streams = [
+            paused,
+            muted,
+            capture,
+            stream("Firefox"),
+            stream("Steam"),
+            stream("speech-dispatcher"),
+            stream("notification"),
+        ];
         assert_eq!(
-            pactl_text_counts(text, false, &[], &[literal("spotify")]),
-            (0, 0)
+            audio_stream_sources(&streams, false, &[], &[]),
+            (vec![], vec![])
+        );
+    }
+
+    #[test]
+    fn transport_metadata_does_not_filter_real_media() {
+        let mut vlc = stream("VLC");
+        vlc.props
+            .insert("client.api".into(), "pipewire-pulse".into());
+        assert_eq!(
+            audio_stream_sources(&[vlc], false, &[], &[]),
+            (vec!["VLC".into()], vec![])
         );
     }
 }

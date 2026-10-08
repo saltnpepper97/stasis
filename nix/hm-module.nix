@@ -15,11 +15,12 @@ let
     ;
   cfg = config.services.stasis;
   # Base packages available in the service PATH.
-  # Include pulseaudio so `pactl` works under PipeWire Pulse.
+  # Native PipeWire tools are preferred; pactl supports genuine PulseAudio.
   baseServicePathPkgs = with pkgs; [
     bashInteractive
     coreutils
     systemd
+    pipewire
     pulseaudio
   ];
 in
@@ -76,7 +77,7 @@ in
       example = literalExpression ''with pkgs; [ playerctl swaylock brightnessctl ]'';
       description = ''
         Extra packages added to the Stasis systemd user service PATH.
-        (`pulseaudio` is included by default so `pactl` is available.)
+        (`pipewire` provides `pw-dump`; `pulseaudio` provides native `pactl`.)
 
         Add packages here only when Stasis itself or commands referenced by your
         Stasis config need to execute them by name. For example, if your config
