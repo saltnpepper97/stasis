@@ -212,8 +212,8 @@ Boolean disables both. Profiles replace or clear `extra_games` just as they do
 the blacklist. Extra observations show their executable/app identity (or the
 configured directory name) and source `Extra games` in status.
 
-`stasis info`, its JSON `games` object, and the tray show catalogue size, running
-games, and detection errors. The JSON object also lists blacklisted observations
+`stasis info`, its JSON `games` object, and the tray tooltip show catalogue size,
+running games, and detection errors. The JSON object also lists blacklisted observations
 under `ignored`; `stasis blame` reports eligible game holds separately.
 
 Unsupported sources, missing paths, and ambiguous shared directories can need
@@ -294,10 +294,9 @@ Changes take effect on `stasis reload` or profile selection. Existing configs
 receive the missing setting through the usual backup-preserving migration;
 explicit values are kept.
 
-Controller input works outside games too. The tray menu shows the monitored
-controller names and whether input was detected recently. `stasis info` and its
-tooltip show the same information; `stasis info --json` includes a `gamepad`
-object with `monitoring`, `devices`, `input_recent`, and `last_activity_ms`.
+Controller input works outside games too. The tray tooltip and `stasis info`
+show monitored controller names and whether input was detected recently.
+`stasis info --json` includes a `gamepad` object with `monitoring`, `devices`, `input_recent`, and `last_activity_ms`.
 Recent input remains visible for three seconds so short presses can be seen
 across tray refreshes. Input resets the idle timer rather than setting a manual
 pause, so `Paused: no` is normal while controls are being used.
@@ -374,6 +373,9 @@ are also included structurally in `stasis info --json`.
 `stasis info --json`; Waybar and other status bars can keep using the JSON output
 directly. Tray users should run both the daemon and tray frontend, for example
 with `stasis.service` plus the optional `stasis-tray.service`.
+
+The right-click menu shows the current status and tray actions. Controller and
+game details remain in the hover tooltip.
 
 The tray requires a StatusNotifier tray host, such as Waybar's tray module, KDE
 Plasma, or another panel. The daemon remains headless and does not launch the
