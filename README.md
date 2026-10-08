@@ -39,6 +39,7 @@ It is a **context-aware, event-driven idle manager** built around explicit state
 
 - 🧠 Smart idle detection with sequential, configurable timeouts
 - 🎮 Gamepad input activity, including hotplug and stick-drift filtering
+- 🎮 Automatic game detection with an optional blacklist; no per-game inhibit rules needed for detected games
 - 🎵 Media-aware idle handling
   - Optional audio-based detection
   - Differentiates active, paused, and muted streams
@@ -67,7 +68,9 @@ It is a **context-aware, event-driven idle manager** built around explicit state
 
 Stasis is built around a deterministic, event-driven state machine.
 
-There are no hidden timers, background polling loops, or implicit behavior.
+Services collect external signals, including periodic application, game, and
+media observations. The state machine makes timing and pause decisions from
+explicit events.
 
     External signals
       ↓
@@ -145,6 +148,81 @@ Start the daemon:
 The full quick-start guide, configuration reference, and integration examples
 are available at https://saltnpepper97.github.io/stasis-site/.
 
+### Automatic game detection
+
+```rune
+default:
+  monitor_games true
+  game_blacklist [ ]
+  extra_games [ ]
+end
+```
+
+`monitor_games` defaults to `true`. Stasis uses
+[`lib_game_detector`](https://github.com/Rolv-Apneseth/lib_game_detector) to
+discover installed titles from Steam (including shortcuts), Heroic, Lutris,
+Bottles, Prism/ATLauncher Minecraft instances, Itch, and Faugus. The catalogue
+refreshes every 60 seconds and on reload/profile changes. Runtime observations
+are polled once per second. Discovery is local and never launches games.
+
+An installed title alone does not prevent idle. A running game identified by
+its executable or script path, Proton/Wine game identity, Minecraft instance
+arguments, or a Steam app window pauses the full idle plan. Helpers such as
+Steam's UI and `wineserver` do not count as games. Halley, Hyprland, and Niri
+provide a Steam app-ID window fallback when catalogue metadata is missing;
+process detection works independently of those compositor integrations.
+
+To allow particular games or launcher-registered tools to idle:
+
+```rune
+default:
+  monitor_games true
+  game_blacklist ["aseprite" "picocad" "steam:440" r"^minecraft - .*"]
+  extra_games [ ]
+end
+```
+
+The blacklist uses the same syntax as `media_blacklist`: lowercase-normalized
+substring literals or regular expressions. It matches each game's title,
+identity (`steam:440` or `steam_app_440` for Steam), source, and installation
+directory. Profiles can replace the list or clear it with `game_blacklist [ ]`,
+and can disable detection with `monitor_games false`. Changes take effect on
+reload without restarting Stasis.
+
+For a manually installed game outside the discovered catalogue, add a fallback:
+
+```rune
+default:
+  monitor_games true
+  game_blacklist [ ]
+  extra_games ["jazz2.exe" "/games/GOG/My Game" r"^my_game$"]
+end
+```
+
+`extra_games` accepts exact executable names or compositor app IDs, absolute
+installation paths, and regexes matched against executable names/paths or app
+IDs. Names are case-insensitive; a name without `.exe` can match its Windows
+executable. A path matches the game executable/script or Minecraft instance
+arguments within that directory. Generic Wine/Java hosts and runtime helpers
+alone do not count. GOG titles registered with a supported launcher such as
+Heroic can already be discovered automatically.
+
+The blacklist applies to automatic and extra game observations alike, and the
+Boolean disables both. Profiles replace or clear `extra_games` just as they do
+the blacklist. Extra observations show their executable/app identity (or the
+configured directory name) and source `Extra games` in status.
+
+`stasis info`, its JSON `games` object, and the tray tooltip show catalogue size,
+running games, and detection errors. The JSON object also lists blacklisted observations
+under `ignored`; `stasis blame` reports eligible game holds separately.
+
+Unsupported sources, missing paths, and ambiguous shared directories can need
+an `extra_games` entry. If Steam metadata is missing, the fallback shows
+`Steam app <id>`; blacklist it by ID. Existing `inhibit_apps`, media, D-Bus, and
+compositor inhibitors remain independent. Remove old broad game rules such as
+`r"steam_app_.*"` or `r".*\.exe"` if you want `game_blacklist` to control the
+automatic game hold. The blacklist does not suppress physical controller input.
+
 ### Screen-lock tracking
 
 Stasis automatically chooses the strongest lock-state source available:
@@ -216,10 +294,9 @@ Changes take effect on `stasis reload` or profile selection. Existing configs
 receive the missing setting through the usual backup-preserving migration;
 explicit values are kept.
 
-Controller input works outside games too. The tray menu shows the monitored
-controller names and whether input was detected recently. `stasis info` and its
-tooltip show the same information; `stasis info --json` includes a `gamepad`
-object with `monitoring`, `devices`, `input_recent`, and `last_activity_ms`.
+Controller input works outside games too. The tray tooltip and `stasis info`
+show monitored controller names and whether input was detected recently.
+`stasis info --json` includes a `gamepad` object with `monitoring`, `devices`, `input_recent`, and `last_activity_ms`.
 Recent input remains visible for three seconds so short presses can be seen
 across tray refreshes. Input resets the idle timer rather than setting a manual
 pause, so `Paused: no` is normal while controls are being used.
@@ -296,6 +373,9 @@ are also included structurally in `stasis info --json`.
 `stasis info --json`; Waybar and other status bars can keep using the JSON output
 directly. Tray users should run both the daemon and tray frontend, for example
 with `stasis.service` plus the optional `stasis-tray.service`.
+
+The right-click menu shows the current status and tray actions. Controller and
+game details remain in the hover tooltip.
 
 The tray requires a StatusNotifier tray host, such as Waybar's tray module, KDE
 Plasma, or another panel. The daemon remains headless and does not launch the
@@ -384,7 +464,9 @@ GitHub Sponsors helps ensure continued maintenance, faster bug fixes, and long-t
 
 ## License
 
-Released under the GPL-3.0 License.
+Stasis source is released under GPL-3.0-only. The compiled program includes
+`lib_game_detector` under AGPL-3.0-only; see [third-party licensing](THIRD_PARTY.md)
+for the combined-work terms and distribution notes.
 
 ---
 

@@ -71,6 +71,183 @@ fn gamepad_activity(mgr: &mut Manager, state: &mut State, now_ms: u64) -> Vec<Ac
     .unwrap()
 }
 
+fn observed_games() -> crate::core::info::GamesInfo {
+    crate::core::info::GamesInfo {
+        monitoring: true,
+        catalogue_entries: 129,
+        running: vec![crate::core::info::DetectedGame {
+            id: "steam:123".into(),
+            title: "Test Game".into(),
+            source: "Steam".into(),
+            path_game_dir: Some("/games/test".into()),
+            pids: vec![42],
+            extra_rule: None,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn game_holds_full_plan_and_exit_rearms_a_compositor_idle_observation() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "off")]));
+    let mut state = State::new(0);
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: observed_games(),
+            now_ms: 100,
+        },
+    )
+    .unwrap();
+    enter_idle(&mut mgr, &mut state, 200);
+    assert!(state.paused());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 5_000 })
+            .unwrap()
+            .is_empty()
+    );
+    let snapshot = mgr.snapshot(&state, 5_000);
+    assert_eq!(snapshot.waybar.games.running[0].id, "steam:123");
+    assert!(snapshot.pretty_text.contains("Running Games: Test Game"));
+    assert_eq!(
+        mgr.blame_snapshot(&state, 5_000).game_inhibitors.sources,
+        ["Test Game"]
+    );
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: crate::core::info::GamesInfo {
+                monitoring: true,
+                catalogue_entries: 129,
+                ..Default::default()
+            },
+            now_ms: 6_000,
+        },
+    )
+    .unwrap();
+    assert!(!state.paused());
+    assert!(!state.debounce_pending());
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 6_999 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 7_000 })
+            .unwrap(),
+        vec![Action::RunCommand {
+            command: "off".into()
+        }]
+    );
+}
+
+#[test]
+fn game_rule_reload_reclassifies_existing_observations_without_overriding_manual_pause() {
+    let mut config = cfg_with_plan(vec![step(PlanStepKind::Dpms, 10, "off")]);
+    let mut mgr = Manager::new(config.clone());
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: observed_games(),
+            now_ms: 100,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    config.default.game_blacklist = vec![Pattern::Literal("test game".into())];
+    mgr.set_config(config.clone());
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 200 })
+        .unwrap();
+    assert!(!state.paused());
+    assert!(state.games().running.is_empty());
+    assert_eq!(state.games().ignored.len(), 1);
+    config.default.game_blacklist.clear();
+    mgr.set_config(config);
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 300 })
+        .unwrap();
+    assert!(state.paused());
+    assert_eq!(state.games().running.len(), 1);
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 400 })
+        .unwrap();
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: Default::default(),
+            now_ms: 500,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    assert!(state.manually_paused());
+}
+
+#[test]
+fn disabled_game_monitoring_rejects_queued_holds_and_explicit_app_rules_still_apply() {
+    let mut config = cfg_with_plan(vec![step(PlanStepKind::Dpms, 10, "off")]);
+    config.default.monitor_games = false;
+    let mut mgr = Manager::new(config);
+    let mut state = State::new(0);
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: observed_games(),
+            now_ms: 100,
+        },
+    )
+    .unwrap();
+    assert!(!state.paused());
+    assert!(!state.games().monitoring);
+    assert!(state.games().running.is_empty());
+    mgr.handle_event(
+        &mut state,
+        Event::AppInhibitorCount {
+            count: 1,
+            suspend_count: 0,
+            now_ms: 200,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+}
+
+#[test]
+fn removing_an_extra_game_rule_releases_the_hold_and_rejects_queued_observations() {
+    let mut config = cfg_with_plan(vec![step(PlanStepKind::Dpms, 10, "off")]);
+    config.default.extra_games = vec![Pattern::Literal("gog-game.exe".into())];
+    let mut mgr = Manager::new(config.clone());
+    let mut state = State::new(0);
+    let mut info = observed_games();
+    info.running[0].id = "extra:gog-game.exe".into();
+    info.running[0].source = "Extra games".into();
+    info.running[0].title = "gog-game.exe".into();
+    info.running[0].extra_rule = Some("gog-game.exe".into());
+    mgr.handle_event(
+        &mut state,
+        Event::GamesChanged {
+            info: info.clone(),
+            now_ms: 100,
+        },
+    )
+    .unwrap();
+    assert!(state.paused());
+    config.default.game_blacklist = vec![Pattern::Literal("gog-game".into())];
+    mgr.set_config(config.clone());
+    mgr.handle_event(&mut state, Event::Tick { now_ms: 200 })
+        .unwrap();
+    assert!(!state.paused());
+    assert_eq!(state.games().ignored.len(), 1);
+    config.default.game_blacklist.clear();
+    config.default.extra_games.clear();
+    mgr.set_config(config);
+    mgr.handle_event(&mut state, Event::GamesChanged { info, now_ms: 300 })
+        .unwrap();
+    assert!(!state.paused());
+    assert!(state.games().running.is_empty());
+    assert!(state.games().ignored.is_empty());
+}
+
 #[test]
 fn gamepad_status_reports_devices_input_recency_and_disconnect_without_holding_idle() {
     let mut mgr = Manager::new(cfg_with_plan(vec![step(PlanStepKind::Dpms, 1, "off")]));

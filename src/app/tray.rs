@@ -4,7 +4,6 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use crate::core::info::GamepadInfo;
 use image::GenericImageView;
 use ksni::{Tray, TrayMethods};
 use serde::Deserialize;
@@ -42,8 +41,6 @@ struct TraySnapshot {
     #[allow(dead_code)]
     class: String,
     tooltip: String,
-    #[serde(default)]
-    gamepad: Option<GamepadInfo>,
 }
 
 impl TraySnapshot {
@@ -63,7 +60,6 @@ impl TraySnapshot {
             alt: "not_running".to_string(),
             class: "not_running".to_string(),
             tooltip: format!("Stasis not running\n{message}"),
-            gamepad: None,
         }
     }
 
@@ -72,24 +68,6 @@ impl TraySnapshot {
             "Stasis paused (manually)".to_string()
         } else {
             format!("Stasis: {}", self.text)
-        }
-    }
-
-    fn gamepad_label(&self) -> String {
-        let Some(info) = &self.gamepad else {
-            return "Gamepad: status unavailable".to_string();
-        };
-        if !info.monitoring {
-            "Gamepad: monitoring disabled".to_string()
-        } else if info.devices.is_empty() {
-            "Gamepad: none connected".to_string()
-        } else {
-            let input = if info.input_recent {
-                "input detected"
-            } else {
-                "waiting for input"
-            };
-            format!("Gamepad: {} ({input})", info.devices.join(", "))
         }
     }
 
@@ -121,7 +99,6 @@ mod tests {
             alt: "manually_inhibited".to_string(),
             class: "manually_inhibited".to_string(),
             tooltip: "Profile: default\nState: manual\nPaused: yes".to_string(),
-            gamepad: None,
         }
     }
 
@@ -137,41 +114,6 @@ mod tests {
         assert!(!description.contains("Manual Pause:"));
         assert!(!description.contains("Paused:"));
         assert_eq!(description.matches("Profile: default").count(), 1);
-    }
-
-    #[test]
-    fn controller_row_distinguishes_detection_input_and_disabled_monitoring() {
-        use crate::core::info::GamepadInfo;
-        let mut snapshot = manual_snapshot();
-        assert_eq!(snapshot.gamepad_label(), "Gamepad: status unavailable");
-        snapshot.gamepad = Some(GamepadInfo {
-            monitoring: true,
-            devices: vec!["Xbox controller".into()],
-            input_recent: false,
-            last_activity_ms: None,
-        });
-        assert_eq!(
-            snapshot.gamepad_label(),
-            "Gamepad: Xbox controller (waiting for input)"
-        );
-        snapshot.gamepad.as_mut().unwrap().input_recent = true;
-        assert_eq!(
-            snapshot.gamepad_label(),
-            "Gamepad: Xbox controller (input detected)"
-        );
-        snapshot.gamepad.as_mut().unwrap().monitoring = false;
-        assert_eq!(snapshot.gamepad_label(), "Gamepad: monitoring disabled");
-        snapshot.gamepad.as_mut().unwrap().monitoring = true;
-        snapshot.gamepad.as_mut().unwrap().devices.clear();
-        assert_eq!(snapshot.gamepad_label(), "Gamepad: none connected");
-    }
-
-    #[test]
-    fn tray_accepts_older_daemon_status_without_gamepad_metadata() {
-        let snapshot: TraySnapshot = serde_json::from_str(
-            r#"{"text":"active","alt":"idle_active","class":"idle_active","tooltip":"State: active"}"#,
-        ).unwrap();
-        assert!(snapshot.gamepad.is_none());
     }
 
     #[test]
@@ -279,12 +221,6 @@ impl Tray for StasisTray {
         vec![
             StandardItem {
                 label: self.snapshot.state_title(),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: self.snapshot.gamepad_label(),
                 enabled: false,
                 ..Default::default()
             }

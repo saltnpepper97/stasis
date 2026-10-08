@@ -91,6 +91,15 @@ impl Manager {
                 state.set_gamepad_devices(devices);
             }
 
+            Event::GamesChanged { info, .. } => {
+                state.set_games(info);
+                self.refresh_timing_holds(state, &cfg, now_ms);
+                if state.paused() {
+                    self.restore_low_power_if_active(state, &mut out);
+                }
+                self.begin_idle_from_verified_observation(state, &cfg, now_ms);
+            }
+
             Event::BrowserActivity { .. } => {
                 // Browser policy is authoritative for gating, but it is not proof
                 // of physical input. Preserve a current compositor observation so
@@ -342,6 +351,7 @@ impl Manager {
                 state.set_suspend_media_inhibitor_count(0);
                 state.set_app_inhibitor_sources(Vec::new());
                 state.set_media_inhibitor_sources(Vec::new());
+                state.set_games(crate::core::info::GamesInfo::default());
                 state.set_suspend_app_inhibitor_sources(Vec::new());
                 state.set_suspend_media_inhibitor_sources(Vec::new());
                 self.refresh_timing_holds(state, &cfg, now_ms);
@@ -634,6 +644,7 @@ impl Manager {
     }
 
     fn refresh_timing_holds(&self, state: &mut State, cfg: &Config, now_ms: u64) {
+        state.apply_game_rules(cfg.monitor_games, &cfg.game_blacklist, &cfg.extra_games);
         state.set_lid_paused(state.lid_closed() && cfg.pause_on_lid_close);
         let new_paused =
             state.manually_paused() || state.inhibitors_active() || state.system_paused();

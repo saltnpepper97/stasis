@@ -4,6 +4,75 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::blame::Login1IdleHold;
+use crate::core::config::Pattern;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetectedGame {
+    pub id: String,
+    pub title: String,
+    pub source: String,
+    pub path_game_dir: Option<String>,
+    pub pids: Vec<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_rule: Option<String>,
+}
+
+impl DetectedGame {
+    pub fn is_blacklisted(&self, patterns: &[Pattern]) -> bool {
+        let steam_app_id = self
+            .id
+            .strip_prefix("steam:")
+            .map(|id| format!("steam_app_{id}"));
+        [
+            Some(self.id.as_str()),
+            Some(self.title.as_str()),
+            Some(self.source.as_str()),
+            self.path_game_dir.as_deref(),
+            steam_app_id.as_deref(),
+            self.extra_rule.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|field| {
+            let field = field.to_lowercase();
+            patterns.iter().any(|pattern| pattern.matches_lc(&field))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GamesInfo {
+    pub monitoring: bool,
+    pub catalogue_entries: usize,
+    pub running: Vec<DetectedGame>,
+    pub ignored: Vec<DetectedGame>,
+    pub errors: Vec<String>,
+}
+
+impl GamesInfo {
+    /// Reclassify observations using the current effective config, including
+    /// queued observations from before a profile switch or config reload.
+    pub fn apply_rules(&mut self, monitoring: bool, blacklist: &[Pattern]) {
+        self.monitoring = monitoring;
+        if !monitoring {
+            self.running.clear();
+            self.ignored.clear();
+            return;
+        }
+        let games = std::mem::take(&mut self.running)
+            .into_iter()
+            .chain(std::mem::take(&mut self.ignored));
+        for game in games {
+            if game.is_blacklisted(blacklist) {
+                self.ignored.push(game);
+            } else {
+                self.running.push(game);
+            }
+        }
+        self.running.sort_by(|a, b| a.id.cmp(&b.id));
+        self.ignored.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GamepadInfo {
@@ -49,6 +118,7 @@ pub struct WaybarInfo {
     pub tooltip: String,
     pub profile: Option<String>,
     pub gamepad: GamepadInfo,
+    pub games: GamesInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub login1_idle_inhibitors: Vec<Login1IdleHold>,
 }
