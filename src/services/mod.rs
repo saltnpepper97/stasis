@@ -2,6 +2,7 @@
 // License: GPL-3.0-only
 
 pub mod app_inhibit;
+pub(crate) mod audio;
 pub mod dbus;
 pub mod gamepad;
 pub mod games;

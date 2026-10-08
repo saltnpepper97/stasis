@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(test)]
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -710,85 +711,49 @@ async fn tracker_set_source_capture(
     }
 }
 
-fn browser_source_capture_active_now() -> Option<bool> {
-    let out = match Command::new("pactl")
-        .args(["list", "source-outputs"])
-        .output()
-    {
-        Ok(out) if out.status.success() => out,
-        _ => return None,
-    };
-    Some(parse_browser_stream_blocks(
-        &String::from_utf8_lossy(&out.stdout),
-        &["Source Output #", "SourceOutput #"],
-        stream_block_is_browser,
-    ))
-}
-
-fn parse_browser_stream_blocks(
-    text: &str,
-    headers: &[&str],
-    block_predicate: fn(&str) -> bool,
-) -> bool {
-    if text.trim().is_empty() {
-        return false;
-    }
-
-    let mut block = String::new();
-    let mut saw_header = false;
-
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        let is_header = headers.iter().any(|header| trimmed.starts_with(header));
-
-        if is_header {
-            if saw_header && block_predicate(&block) {
-                return true;
-            }
-            block.clear();
-            saw_header = true;
-        }
-
-        if saw_header {
-            block.push_str(line);
-            block.push('\n');
-        }
-    }
-
-    saw_header && block_predicate(&block)
-}
-
-fn stream_block_is_browser(block: &str) -> bool {
-    let block = block.to_ascii_lowercase();
-    [
-        "firefox",
-        "vivaldi",
-        "chromium",
-        "google-chrome",
-        "google chrome",
-        "brave",
-        "librewolf",
-        "waterfox",
-        "zen browser",
-        "zen-browser",
-        "msedge",
-        "microsoft-edge",
-        "opera",
-    ]
-    .iter()
-    .any(|token| block.contains(token))
+fn browser_source_capture_active(streams: &[super::audio::AudioStream]) -> bool {
+    streams.iter().any(|stream| {
+        stream.direction == super::audio::Direction::Capture
+            && stream.running
+            && !stream.muted
+            && super::media::audio_stream_is_browser(&stream.props)
+    })
 }
 
 fn spawn_source_capture_monitor(tracker: Arc<Mutex<DbusInhibitTracker>>, sink: Arc<dyn EventSink>) {
     tokio::spawn(async move {
+        let mut audio = super::audio::AudioReader::default();
+        let mut previous_error = None;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if let Ok(Some(active)) =
-                tokio::task::spawn_blocking(browser_source_capture_active_now).await
-            {
-                tracker_set_source_capture(&tracker, &sink, active).await;
+            let previous_backend = audio.backend_name();
+            match audio.read(super::audio::Direction::Capture).await {
+                Ok(streams) => {
+                    if previous_backend != audio.backend_name() || previous_error.is_some() {
+                        eventline::info!(
+                            "dbus: source capture connected to {}",
+                            audio.backend_name()
+                        );
+                    }
+                    previous_error = None;
+                    tracker_set_source_capture(
+                        &tracker,
+                        &sink,
+                        browser_source_capture_active(&streams),
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    if previous_error.as_ref() != Some(&error) {
+                        eventline::warn!(
+                            "dbus: source capture query failed (keeping previous): {}",
+                            error
+                        );
+                    }
+                    previous_error = Some(error);
+                }
             }
         }
     });
@@ -1512,7 +1477,9 @@ async fn get_current_session_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{DbusInhibitTracker, Login1IdleTracker, PendingHold, stream_block_is_browser};
+    use super::{
+        DbusInhibitTracker, Login1IdleTracker, PendingHold, browser_source_capture_active,
+    };
 
     fn pending(protocol: &str) -> PendingHold {
         PendingHold {
@@ -1608,15 +1575,31 @@ mod tests {
     }
 
     #[test]
-    fn browser_source_capture_detection_uses_stream_identity() {
-        let block = r#"
-Properties:
-    application.name = "Firefox"
-"#;
-        assert!(stream_block_is_browser(block));
-        assert!(!stream_block_is_browser(
-            "Properties:\n    application.name = \"Zoom\""
-        ));
+    fn browser_source_capture_requires_active_browser_audio_capture() {
+        use super::super::audio::{AudioStream, Direction};
+        let mut stream = AudioStream {
+            direction: Direction::Capture,
+            running: true,
+            muted: false,
+            props: std::collections::HashMap::from([("application.name".into(), "Firefox".into())]),
+        };
+        assert!(browser_source_capture_active(&[stream.clone()]));
+        stream.running = false;
+        assert!(!browser_source_capture_active(&[stream.clone()]));
+        stream.running = true;
+        stream.muted = true;
+        assert!(!browser_source_capture_active(&[stream.clone()]));
+        stream.muted = false;
+        stream.direction = Direction::Playback;
+        assert!(!browser_source_capture_active(&[stream.clone()]));
+        stream.direction = Direction::Capture;
+        stream
+            .props
+            .insert("application.name".into(), "Zoom".into());
+        stream
+            .props
+            .insert("media.name".into(), "Firefox video".into());
+        assert!(!browser_source_capture_active(&[stream]));
     }
 
     #[test]
