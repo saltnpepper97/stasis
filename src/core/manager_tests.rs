@@ -1800,10 +1800,153 @@ fn command(command: &str) -> Action {
 }
 
 #[test]
+fn starting_with_closed_lid_uses_normal_compositor_idle_without_locking_or_pausing() {
+    let mut cfg = lid_grace_config();
+    cfg.default.pause_on_lid_close = true;
+    cfg.default.plan_desktop = vec![step(PlanStepKind::Dpms, 10, "off")];
+    let mut mgr = Manager::new(cfg);
+    let mut state = State::new(0);
+
+    assert!(
+        mgr.handle_event(
+            &mut state,
+            Event::LidStateInitialized {
+                closed: true,
+                now_ms: 100,
+            }
+        )
+        .unwrap()
+        .is_empty()
+    );
+    assert!(state.lid_closed());
+    assert!(!state.system_paused());
+    assert!(state.debounce_pending());
+    // Duplicate hardware reports do not turn the baseline into a closure.
+    assert!(
+        mgr.handle_event(&mut state, Event::LidClosed { now_ms: 200 })
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 60_000 })
+            .unwrap()
+            .is_empty()
+    );
+    enter_idle(&mut mgr, &mut state, 60_100);
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 70_100 })
+            .unwrap(),
+        vec![command("off")]
+    );
+
+    // Opening and then closing still applies the configured close policy.
+    mgr.handle_event(&mut state, Event::LidOpened { now_ms: 70_200 })
+        .unwrap();
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::LidClosed { now_ms: 70_300 })
+            .unwrap(),
+        vec![command("lock-and-off")]
+    );
+    assert!(state.system_paused());
+}
+
+#[test]
+fn closed_startup_baseline_survives_wake_and_profile_changes() {
+    let mut cfg = lid_grace_config();
+    cfg.default.pause_on_lid_close = true;
+    let mut mgr = Manager::new(cfg);
+    let mut state = State::new(0);
+    mgr.handle_event(
+        &mut state,
+        Event::LidStateInitialized {
+            closed: true,
+            now_ms: 0,
+        },
+    )
+    .unwrap();
+    mgr.handle_event(&mut state, Event::PrepareForSleep { now_ms: 100 })
+        .unwrap();
+    assert!(state.system_paused());
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 200 })
+        .unwrap();
+    assert!(
+        mgr.handle_event(&mut state, Event::ResumedFromSleep { now_ms: 200 })
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!state.system_paused());
+    for event in [
+        Event::ProfileChanged {
+            name: "none".into(),
+            now_ms: 300,
+        },
+        Event::PowerChanged {
+            state: crate::core::events::PowerState::OnAC,
+            now_ms: 400,
+        },
+    ] {
+        mgr.handle_event(&mut state, event).unwrap();
+        assert!(!state.paused());
+    }
+}
+
+#[test]
+fn startup_closed_lid_preserves_opt_in_grace_period() {
+    let mut mgr = Manager::new(lid_grace_config());
+    let mut state = State::new(0);
+    assert_eq!(
+        mgr.handle_event(
+            &mut state,
+            Event::LidStateInitialized {
+                closed: true,
+                now_ms: 100,
+            }
+        )
+        .unwrap(),
+        vec![command("lock-and-off")]
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 10_100 })
+            .unwrap(),
+        vec![command("sleep")]
+    );
+}
+
+#[test]
+fn redundant_manual_resume_keeps_idle_timing_and_other_holds() {
+    let mut cfg = lid_grace_config();
+    cfg.default.pause_on_lid_close = true;
+    cfg.default.plan_desktop = vec![step(PlanStepKind::Dpms, 10, "off")];
+    let mut mgr = Manager::new(cfg);
+    let mut state = State::new(0);
+    enter_idle(&mut mgr, &mut state, 0);
+    assert!(
+        mgr.handle_event(&mut state, Event::ManualResume { now_ms: 9_000 })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mgr.handle_event(&mut state, Event::Tick { now_ms: 10_000 })
+            .unwrap(),
+        vec![command("off")]
+    );
+    mgr.handle_event(&mut state, Event::LidClosed { now_ms: 11_000 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::ManualResume { now_ms: 12_000 })
+        .unwrap();
+    assert!(state.system_paused());
+    mgr.handle_event(&mut state, Event::ManualPause { now_ms: 13_000 })
+        .unwrap();
+    mgr.handle_event(&mut state, Event::ManualResume { now_ms: 14_000 })
+        .unwrap();
+    assert!(!state.manually_paused());
+    assert!(state.system_paused());
+}
+
+#[test]
 fn lid_close_starts_ten_second_grace_period_without_compositor_idle() {
     let mut mgr = Manager::new(lid_grace_config());
     let mut state = State::new(0);
-    // The same event comes from the initial UPower read when already closed.
     assert_eq!(
         mgr.handle_event(&mut state, Event::LidClosed { now_ms: 100 })
             .unwrap(),

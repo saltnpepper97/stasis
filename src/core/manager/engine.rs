@@ -128,10 +128,9 @@ impl Manager {
             }
 
             Event::ManualResume { .. } => {
-                if !state.manually_paused() {
-                    return Err(Error::InvalidState(StateError::NotPaused));
+                if state.manually_paused() {
+                    self.release_manual_pause(state, &cfg, now_ms, &mut out);
                 }
-                self.release_manual_pause(state, &cfg, now_ms, &mut out);
             }
 
             // notify_on_unpause should ONLY fire for auto-resume from
@@ -293,13 +292,25 @@ impl Manager {
                 self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
                 // A wake while still closed starts another grace period, including
                 // the immediate lock/display-off command, without a new lid edge.
-                if state.lid_closed() && !cfg.pause_on_lid_close {
+                if state.lid_close_active() && !cfg.pause_on_lid_close {
                     Self::run_lid_command(&cfg.lid_close_action, &mut out);
                 }
             }
 
-            Event::LidClosed { .. } => {
-                // Initial state and repeated property notifications must not
+            Event::LidStateInitialized { closed, .. } if cfg.pause_on_lid_close => {
+                // A laptop already closed at launch may be in use at a dock.
+                // Record its hardware state without a lock command or lid hold.
+                state.initialize_lid_state(closed);
+                self.refresh_timing_holds(state, &cfg, now_ms);
+            }
+
+            Event::LidStateInitialized { closed: false, .. } => {
+                state.initialize_lid_state(false);
+            }
+
+            Event::LidClosed { .. } | Event::LidStateInitialized { closed: true, .. } => {
+                // Opt-in grace mode also applies to a closed startup snapshot.
+                // Repeated property notifications must not
                 // restart a countdown or run the close command twice.
                 if state.lid_closed() {
                     return Ok(out);
@@ -465,7 +476,7 @@ impl Manager {
                 state.set_compositor_idle(false);
                 // Display changes/locker focus while closed aren't physical input
                 // and must not cancel the lid countdown or wake the display.
-                if !state.lid_closed() || cfg.pause_on_lid_close {
+                if !state.lid_close_active() || cfg.pause_on_lid_close {
                     self.handle_activity_like_event(state, &cfg, now_ms, &mut out);
                 }
             }
@@ -475,7 +486,7 @@ impl Manager {
                 // another Stasis policy temporarily prevents plan timing.
                 state.set_compositor_idle(true);
 
-                if state.lid_closed() && !cfg.pause_on_lid_close {
+                if state.lid_close_active() && !cfg.pause_on_lid_close {
                     self.begin_idle_for_closed_lid(state, &cfg, now_ms);
                     return Ok(out);
                 }
@@ -522,7 +533,7 @@ impl Manager {
     }
 
     fn begin_idle_for_closed_lid(&self, state: &mut State, cfg: &Config, now_ms: u64) {
-        if state.lid_closed() && !cfg.pause_on_lid_close {
+        if state.lid_close_active() && !cfg.pause_on_lid_close {
             self.begin_idle_from_verified_observation(state, cfg, now_ms);
         }
     }
@@ -552,7 +563,7 @@ impl Manager {
     }
 
     fn begin_idle_from_verified_observation(&self, state: &mut State, cfg: &Config, now_ms: u64) {
-        if (state.compositor_idle() || (state.lid_closed() && !cfg.pause_on_lid_close))
+        if (state.compositor_idle() || (state.lid_close_active() && !cfg.pause_on_lid_close))
             && state.debounce_pending()
             && !state.paused()
             && !state.browser_activity_active(now_ms)
@@ -645,7 +656,7 @@ impl Manager {
 
     fn refresh_timing_holds(&self, state: &mut State, cfg: &Config, now_ms: u64) {
         state.apply_game_rules(cfg.monitor_games, &cfg.game_blacklist, &cfg.extra_games);
-        state.set_lid_paused(state.lid_closed() && cfg.pause_on_lid_close);
+        state.set_lid_paused(state.lid_close_active() && cfg.pause_on_lid_close);
         let new_paused =
             state.manually_paused() || state.inhibitors_active() || state.system_paused();
         let was_paused = state.paused();

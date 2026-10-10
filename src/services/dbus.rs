@@ -1153,9 +1153,14 @@ async fn read_lid_state(connection: &Connection) -> zbus::Result<Option<bool>> {
     Ok(Some(proxy.get_property::<bool>("LidIsClosed").await?))
 }
 
-async fn publish_lid_state(connection: &Connection, sink: &Arc<dyn EventSink>) {
+async fn publish_lid_state(connection: &Connection, sink: &Arc<dyn EventSink>, initial: bool) {
     match read_lid_state(connection).await {
-        Ok(Some(closed)) => sink.push(if closed {
+        Ok(Some(closed)) => sink.push(if initial {
+            Event::LidStateInitialized {
+                closed,
+                now_ms: now_ms(),
+            }
+        } else if closed {
             Event::LidClosed { now_ms: now_ms() }
         } else {
             Event::LidOpened { now_ms: now_ms() }
@@ -1175,7 +1180,7 @@ async fn spawn_lid_monitor(connection: Connection, sink: Arc<dyn EventSink>) -> 
         .build();
     // Subscribe before reading/activating UPower so no startup transition is lost.
     let mut stream = zbus::MessageStream::for_match_rule(rule, &connection, None).await?;
-    publish_lid_state(&connection, &sink).await;
+    publish_lid_state(&connection, &sink, true).await;
     tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
             let Ok(msg) = msg else { continue };
@@ -1198,7 +1203,7 @@ async fn spawn_lid_monitor(connection: Connection, sink: Arc<dyn EventSink>) -> 
             {
                 // Fetch current state rather than replaying a queued stale value.
                 // This also handles UPower invalidating a property without a value.
-                publish_lid_state(&connection, &sink).await;
+                publish_lid_state(&connection, &sink, false).await;
             }
         }
     });
@@ -1269,7 +1274,7 @@ async fn run_dbus(
                                 if !going_down {
                                     // Reconcile the hardware state before wake handling:
                                     // the lid may have changed while we were asleep.
-                                    publish_lid_state(&connection, &sink).await;
+                                    publish_lid_state(&connection, &sink, false).await;
                                 }
                                 let t = now_ms();
                                 sink.push(if going_down {
@@ -1762,7 +1767,10 @@ mod lid_dbus_tests {
         spawn_lid_monitor(client.clone(), sink.clone())
             .await
             .unwrap();
-        assert!(matches!(next_event(&mut rx).await, Event::LidClosed { .. }));
+        assert!(matches!(
+            next_event(&mut rx).await,
+            Event::LidStateInitialized { closed: true, .. }
+        ));
 
         closed.store(false, Ordering::SeqCst);
         changed(&server, false).await;
@@ -1774,11 +1782,11 @@ mod lid_dbus_tests {
         // A lid change during sleep can have no signal. The wake path calls the
         // same uncached reconciliation before ResumedFromSleep is published.
         closed.store(false, Ordering::SeqCst);
-        publish_lid_state(&client, &sink).await;
+        publish_lid_state(&client, &sink, false).await;
         assert!(matches!(next_event(&mut rx).await, Event::LidOpened { .. }));
         present.store(false, Ordering::SeqCst);
         assert_eq!(read_lid_state(&client).await.unwrap(), None);
-        publish_lid_state(&client, &sink).await;
+        publish_lid_state(&client, &sink, false).await;
         assert!(
             tokio::time::timeout(Duration::from_millis(50), rx.recv())
                 .await

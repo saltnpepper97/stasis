@@ -86,6 +86,8 @@ New pause/resume requests invalidate older scheduled auto-resumes.
 .B resume
 Resume idle timers after a manual pause.
 Any pending scheduled auto-resume is invalidated.
+Repeated requests are harmless. Only the manual pause is released; lid, sleep,
+and inhibitor holds still apply.
 
 .TP
 .BR list " " actions | profiles

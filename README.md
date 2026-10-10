@@ -260,7 +260,12 @@ with `timeout 10`. See [the complete laptop example](examples/lid-grace-period.r
 This runs the same configured plan used for ordinary idle, including its
 sequential step timeouts and notifications; it does not create a separate lid plan.
 
-Stasis reads UPower's current lid state on startup. Enable
+Stasis reads UPower's current lid state on startup. With the default
+`pause_on_lid_close true`, an already-closed lid is recorded without running the
+close command or pausing timers, allowing normal idle handling when starting
+at a dock. Opening and then closing the lid applies the usual close behavior.
+With `pause_on_lid_close false`, an already-closed lid starts the configured
+grace period and runs the close command. Enable
 `enable_loginctl_integration true` for wake handling: waking with the lid still
 closed reruns the close command and starts another countdown. Opening the lid
 does not unlock the session.
@@ -392,6 +397,9 @@ still runs immediately.
     stasis report [today|week]
     stasis reload
     stasis stop
+
+`stasis resume` releases only the manual pause. Repeated requests are harmless;
+lid, sleep, and inhibitor holds still apply.
 
 `stasis blame` explains why an idle action is held. It names active
 manual/system pauses, matched applications and media, suspend-only blockers,

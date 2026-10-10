@@ -80,6 +80,11 @@ pub enum Event {
         now_ms: u64,
     },
 
+    /// Initial hardware snapshot, distinct from a lid transition.
+    LidStateInitialized {
+        closed: bool,
+        now_ms: u64,
+    },
     LidClosed {
         now_ms: u64,
     },
@@ -175,6 +180,7 @@ impl Event {
             | Event::CompositorIdled { now_ms }
             | Event::CompositorResumed { now_ms }
             | Event::PowerChanged { now_ms, .. }
+            | Event::LidStateInitialized { now_ms, .. }
             | Event::LidClosed { now_ms }
             | Event::LidOpened { now_ms }
             | Event::SessionLocked { now_ms, .. }

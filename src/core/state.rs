@@ -51,6 +51,8 @@ pub struct State {
     // Sleep and lid holds are independent: opening the lid cannot release sleep.
     preparing_for_sleep: bool,
     lid_closed: bool,
+    // Default startup snapshots record hardware without replaying a closure.
+    lid_close_active: bool,
     lid_paused: bool,
 
     // Derived pause (manual OR inhibitors OR system)
@@ -141,6 +143,7 @@ impl State {
             manually_paused: false,
             preparing_for_sleep: false,
             lid_closed: false,
+            lid_close_active: false,
             lid_paused: false,
             paused: false,
             pause_started_ms: None,
@@ -450,6 +453,10 @@ impl State {
         self.lid_closed
     }
 
+    pub fn lid_close_active(&self) -> bool {
+        self.lid_close_active
+    }
+
     pub fn paused(&self) -> bool {
         self.paused
     }
@@ -578,6 +585,12 @@ impl State {
 
     pub fn set_lid_closed(&mut self, v: bool) {
         self.lid_closed = v;
+        self.lid_close_active = v;
+    }
+
+    pub fn initialize_lid_state(&mut self, closed: bool) {
+        self.lid_closed = closed;
+        self.lid_close_active = false;
     }
 
     pub fn set_lid_paused(&mut self, v: bool) {

@@ -139,7 +139,9 @@ pub async fn handle_resume(tx: &mpsc::Sender<ManagerMsg>) -> String {
     {
         return "ERROR: daemon event channel closed".to_string();
     }
-    "Idle timers resumed".to_string()
+    // Commands run by the daemon may call resume themselves. Acknowledge the
+    // queued request without waiting on that same daemon's action executor.
+    "Manual pause release requested; other pause sources still apply".to_string()
 }
 
 // ---------------- parsing ----------------
@@ -340,4 +342,26 @@ fn parse_until_local_time(s: &str) -> Result<Duration, String> {
             .try_into()
             .map_err(|_| "Duration too large".to_string())?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resume_acknowledges_request_without_waiting_for_action_executor() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let reply = tokio::time::timeout(Duration::from_secs(1), handle_resume(&tx))
+            .await
+            .unwrap();
+        assert_eq!(
+            reply,
+            "Manual pause release requested; other pause sources still apply"
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ManagerMsg::Event(Event::ManualResume { .. }))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
 }

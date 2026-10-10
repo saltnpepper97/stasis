@@ -228,7 +228,11 @@ The same plan runs for ordinary idle and lid closure; sequential step timeouts
 and notifications still apply.
 Enable \fBenable_loginctl_integration true\fR to restart the countdown and rerun
 the close command when waking with the lid still closed. Current lid state is
-also read at startup. Opening the lid does not unlock the session.
+also read at startup. With the default \fBtrue\fR, an already-closed lid is
+recorded without running the close command or pausing timers; normal compositor
+idle handling continues. Opening and then closing the lid applies the usual
+close behavior. With \fBfalse\fR, a closed startup snapshot starts the grace
+period and runs the close command. Opening the lid does not unlock the session.
 Logind and any desktop power manager must permit lid closure without immediately
 suspending; Stasis does not change their settings.
 

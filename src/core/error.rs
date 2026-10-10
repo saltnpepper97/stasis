@@ -33,7 +33,6 @@ pub enum ConfigError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateError {
     AlreadyPaused,
-    NotPaused,
 }
 
 // ---------------- Display ----------------
@@ -60,7 +59,6 @@ impl fmt::Display for StateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StateError::AlreadyPaused => write!(f, "already paused"),
-            StateError::NotPaused => write!(f, "not paused"),
         }
     }
 }

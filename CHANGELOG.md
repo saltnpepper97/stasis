@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Starting with an already-closed lid no longer locks or pauses the session with the default lid policy; normal idle timers continue. Explicit lid grace mode still handles closed-lid startup, and actual lid transitions retain their configured behavior. Redundant manual resume requests no longer log `InvalidState(NotPaused)`; resume responses no longer claim that all pause sources were cleared ([#106](https://github.com/saltnpepper97/stasis/issues/106)).
 - Nix builds resolve process-test tools through `PATH` with an explicit coreutils test dependency, instead of requiring `/usr/bin/sleep` or `/bin/sh`. Package metadata now lists the source and linked library's GPL/AGPL licenses ([#104](https://github.com/saltnpepper97/stasis/issues/104)).
 - Lid state is read at startup and reconciled before sleep resume, including laptops started or woken with the lid already closed. Duplicate lid/compositor reports do not restart the closed-lid countdown, and opening a lid cannot release an active sleep pause.
 
