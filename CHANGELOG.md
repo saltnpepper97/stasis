@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Terminal `info` focuses on session state, timing, devices, game detection diagnostics, and effective configuration, with a brief blocker summary. Repeated inhibitor counts and eligible running-game names belong to `blame`, which now shows only active blockers and prints one line when none are present. Suspend-only labels, blocker identities, D-Bus/login1 diagnostics, both JSON formats, and the panel/tray tooltip remain available.
 - Configuration loading now matches Halley's create-only behavior: existing files and symlinks are never rewritten or backed up, and missing settings use built-in defaults in memory. Legacy setting names remain readable without migration. First-run creation preserves existing paths, including dangling symlinks and configs created concurrently.
 - Native PipeWire audio monitoring keeps `pw-dump --monitor` connected and reads state changes instead of repeatedly launching and parsing full registry dumps, reducing background CPU usage. Disconnects preserve the previous observation until reconnection.
 - Audio monitoring prefers native PipeWire through `pw-dump`, with direct native PulseAudio through JSON `pactl` as a fallback. Stasis no longer depends on `pipewire-pulse`; compatibility servers are rejected as PulseAudio fallbacks. Media and browser microphone monitoring share stream parsing, preserve observations on bounded query failures, and reconnect after server availability changes.

@@ -139,21 +139,30 @@ Stop all running Stasis instances.
 .TP
 .BR info " " [\-\-json]
 Display current session information.
+The terminal output shows state, profile and plan source, the next action and
+countdown, controller activity, game detection diagnostics, and effective
+configuration. A brief blocker summary points to \fBstasis blame\fR for
+inhibitor counts and eligible running-game names.
+.PP
 With \fB--json\fR, output machine-readable JSON. Active blocking login1
 idle inhibitors are included as structured entries.
 The \fBgames\fR object includes catalogue size, eligible running games,
 blacklisted observations, and detection errors.
+The detailed JSON tooltip remains available for panels and the tray.
 
 .TP
 .BR blame " " [\-\-json]
 Explain what currently prevents idle progression. The human-readable output
-groups manual and system pauses, regular application, game, and media inhibitors,
+shows only active manual and system pauses, regular application, game, and media inhibitors,
 suspend-only inhibitors, live D-Bus holds, and blocking login1 idle holds.
 D-Bus entries include the
 protocol, available application or process identity, reason, flags, age, and
 cookie or request handle.
+An unblocked session prints \fBNo current blockers\fR. Suspend-only blockers
+remain labelled separately from full-plan inhibitors.
 .PP
-With \fB--json\fR, emit the versioned machine-readable snapshot. Unresolved
+With \fB--json\fR, emit the versioned machine-readable snapshot, retaining
+inactive categories and all existing fields. Unresolved
 D-Bus identities are marked as live but unresolved; closed requests are not
 reported as active holds.
 

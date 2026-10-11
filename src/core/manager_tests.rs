@@ -108,7 +108,19 @@ fn game_holds_full_plan_and_exit_rearms_a_compositor_idle_observation() {
     );
     let snapshot = mgr.snapshot(&state, 5_000);
     assert_eq!(snapshot.waybar.games.running[0].id, "steam:123");
-    assert!(snapshot.pretty_text.contains("Running Games: Test Game"));
+    assert!(!snapshot.pretty_text.contains("Running Games:"));
+    assert!(snapshot.pretty_text.contains("Game Catalogue: 129 entries"));
+    assert!(
+        snapshot
+            .pretty_text
+            .contains("Blockers: idle progression (see stasis blame)")
+    );
+    assert!(snapshot.waybar.tooltip.contains("Running Games: Test Game"));
+    assert!(
+        mgr.blame_snapshot(&state, 5_000)
+            .render_human()
+            .contains("Games: 1 (Test Game)")
+    );
     assert_eq!(
         mgr.blame_snapshot(&state, 5_000).game_inhibitors.sources,
         ["Test Game"]
@@ -655,6 +667,95 @@ fn blame_snapshot_reports_named_sources_and_live_dbus_metadata() {
     assert_eq!(blame.app_inhibitors.sources, ["handbrake"]);
     assert_eq!(blame.dbus_holds[0].age_ms, 5_000);
     assert_eq!(blame.dbus_holds[0].cookie, Some(4));
+    let info = mgr.snapshot(&state, 6_000);
+    assert!(
+        info.pretty_text
+            .contains("Blockers: idle progression (see stasis blame)")
+    );
+    assert!(!info.pretty_text.contains("Apps Inhibiting:"));
+    let rendered = blame.render_human();
+    assert!(rendered.contains("Applications: 1 (handbrake)"));
+    assert!(rendered.contains("Voice chat via org.freedesktop.ScreenSaver [live], age 5s, reason: screen sharing, cookie: 4"));
+}
+
+#[test]
+fn info_keeps_status_configuration_devices_and_detection_diagnostics() {
+    let mut mgr = Manager::new(cfg_with_plan(vec![step(
+        PlanStepKind::Suspend,
+        100,
+        "suspend",
+    )]));
+    let mut state = State::new(0);
+    let waiting = mgr.snapshot(&state, 0);
+    assert!(waiting.pretty_text.contains("State: waiting"));
+    assert!(waiting.pretty_text.contains("Next: waiting for idle"));
+    enter_idle(&mut mgr, &mut state, 0);
+    state.set_gamepad_devices(vec!["Xbox controller".into()]);
+    let mut games = observed_games();
+    games.ignored = games.running.drain(..).collect();
+    games.errors = vec!["launcher metadata unavailable".into()];
+    state.set_games(games);
+    let snapshot = mgr.snapshot(&state, 0);
+    for detail in [
+        "Profile:",
+        "Plan Source: Desktop",
+        "State: active",
+        "Paused: no",
+        "Blockers: none",
+        "Gamepads: Xbox controller",
+        "Game Catalogue: 129 entries",
+        "Games Ignored: Test Game",
+        "Game Detection Errors: launcher metadata unavailable",
+        "Next: Suspend in 100s",
+        "◆ CONFIGURATION",
+        "MonitorGames:",
+        "Plan:",
+    ] {
+        assert!(
+            snapshot.pretty_text.contains(detail),
+            "missing {detail}: {}",
+            snapshot.pretty_text
+        );
+    }
+    for overlap in [
+        "Manual Pause:",
+        "Apps Inhibiting:",
+        "Media Players Playing:",
+        "Apps Blocking Suspend:",
+        "Media Players Blocking Suspend:",
+        "login1 Idle Inhibitors Blocking Suspend:",
+        "D-Bus Inhibiting:",
+        "Games Inhibiting:",
+        "Running Games:",
+    ] {
+        assert!(
+            !snapshot.pretty_text.contains(overlap),
+            "{overlap} belongs in blame"
+        );
+    }
+    assert_eq!(
+        mgr.blame_snapshot(&state, 0).render_human(),
+        "No current blockers"
+    );
+    let json = serde_json::to_value(&snapshot.waybar).unwrap();
+    assert_eq!(json["games"]["ignored"][0]["title"], "Test Game");
+    assert_eq!(json["gamepad"]["devices"][0], "Xbox controller");
+    // The JSON tooltip is consumed by panels and the tray, including their
+    // manual-pause detection when the locked state masks that pause.
+    assert!(snapshot.waybar.tooltip.contains("Manual Pause: no"));
+    assert!(snapshot.waybar.tooltip.contains("Apps Inhibiting: 0"));
+    state.set_locked(true);
+    state.set_manually_paused(true);
+    state.set_paused(true);
+    let locked = mgr.snapshot(&state, 0);
+    assert_eq!(locked.waybar.alt, "locked");
+    assert!(locked.waybar.tooltip.contains("Manual Pause: yes"));
+    assert!(locked.pretty_text.contains("State: locked"));
+    assert!(
+        mgr.blame_snapshot(&state, 0)
+            .render_human()
+            .contains("Manual pause: active")
+    );
 }
 
 #[test]
@@ -1657,12 +1758,24 @@ fn login1_idle_hold_blocks_only_suspend_and_cleans_up() {
     assert!(
         snapshot
             .pretty_text
+            .contains("Blockers: automatic suspend (see stasis blame)")
+    );
+    assert!(
+        snapshot
+            .waybar
+            .tooltip
             .contains("login1 Idle Inhibitors Blocking Suspend: 1")
     );
-    assert!(snapshot.pretty_text.contains("D-Bus Inhibiting: yes"));
+    assert!(snapshot.waybar.tooltip.contains("D-Bus Inhibiting: yes"));
     let blame = mgr.blame_snapshot(&state, 4_000);
     assert_eq!(blame.login1_idle_holds[0].who, "codex");
     assert_eq!(blame.login1_idle_holds[0].age_ms, 3_500);
+    assert!(
+        blame
+            .render_human()
+            .contains("login1 idle holds: 1 blocking suspend")
+    );
+    assert!(blame.render_human().contains("codex [live], age 3s"));
 
     mgr.handle_event(
         &mut state,
@@ -1710,7 +1823,12 @@ fn info_reports_suspend_only_configuration_and_live_hold() {
     assert!(
         snapshot
             .pretty_text
-            .contains("Media Players Blocking Suspend: 1")
+            .contains("Blockers: automatic suspend (see stasis blame)")
+    );
+    assert!(
+        mgr.blame_snapshot(&state, 4_000)
+            .render_human()
+            .contains("Suspend-only media: 1 (identity unavailable)")
     );
     assert!(
         snapshot

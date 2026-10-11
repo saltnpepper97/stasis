@@ -106,9 +106,7 @@ impl BlameSnapshot {
             &self.suspend_media_inhibitors,
         );
 
-        if self.dbus_holds.is_empty() {
-            out.push_str("D-Bus holds: none\n");
-        } else {
+        if !self.dbus_holds.is_empty() {
             out.push_str(&format!("D-Bus holds: {} live\n", self.dbus_holds.len()));
             for hold in &self.dbus_holds {
                 let identity = hold
@@ -141,9 +139,7 @@ impl BlameSnapshot {
             }
         }
 
-        if self.login1_idle_holds.is_empty() {
-            out.push_str("login1 idle holds: none\n");
-        } else {
+        if !self.login1_idle_holds.is_empty() {
             out.push_str(&format!(
                 "login1 idle holds: {} blocking suspend\n",
                 self.login1_idle_holds.len()
@@ -166,7 +162,9 @@ impl BlameSnapshot {
             }
         }
 
-        if !self.progression_blocked {
+        if !self.progression_blocked && out == "Stasis progression blockers\n" {
+            return "No current blockers".to_string();
+        } else if !self.progression_blocked {
             out.push_str("Result: no current blocker\n");
         } else {
             out.push_str("Result: an automatic idle action is currently blocked\n");
@@ -177,15 +175,13 @@ impl BlameSnapshot {
 }
 
 fn push_toggle(out: &mut String, label: &str, active: bool) {
-    out.push_str(&format!(
-        "{label}: {}\n",
-        if active { "active" } else { "inactive" }
-    ));
+    if active {
+        out.push_str(&format!("{label}: active\n"));
+    }
 }
 
 fn push_category(out: &mut String, label: &str, category: &BlameCategory) {
     if category.count == 0 {
-        out.push_str(&format!("{label}: none\n"));
         return;
     }
 
@@ -217,6 +213,140 @@ fn human_duration(age_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_snapshot() -> BlameSnapshot {
+        BlameSnapshot {
+            schema_version: 1,
+            generated_at_ms: 2_000,
+            progression_blocked: false,
+            manual_pause: false,
+            system_pause: false,
+            browser_source_capture: false,
+            app_inhibitors: BlameCategory::new(0, &[]),
+            media_inhibitors: BlameCategory::new(0, &[]),
+            game_inhibitors: BlameCategory::new(0, &[]),
+            suspend_app_inhibitors: BlameCategory::new(0, &[]),
+            suspend_media_inhibitors: BlameCategory::new(0, &[]),
+            dbus_holds: Vec::new(),
+            login1_idle_holds: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn clear_session_is_one_line_but_json_keeps_inactive_categories() {
+        let snapshot = empty_snapshot();
+        assert_eq!(snapshot.render_human(), "No current blockers");
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["progression_blocked"], false);
+        for key in ["manual_pause", "system_pause", "browser_source_capture"] {
+            assert_eq!(json[key], false);
+        }
+        for key in [
+            "app_inhibitors",
+            "media_inhibitors",
+            "game_inhibitors",
+            "suspend_app_inhibitors",
+            "suspend_media_inhibitors",
+        ] {
+            assert_eq!(
+                json[key],
+                serde_json::json!({"active": false, "count": 0, "sources": []})
+            );
+        }
+        assert_eq!(json["dbus_holds"], serde_json::json!([]));
+        assert_eq!(json["login1_idle_holds"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn every_active_category_keeps_counts_and_available_identities() {
+        let mut snapshot = empty_snapshot();
+        snapshot.progression_blocked = true;
+        snapshot.manual_pause = true;
+        snapshot.system_pause = true;
+        snapshot.browser_source_capture = true;
+        snapshot.app_inhibitors = BlameCategory::new(2, &["vlc".into(), "mpv".into()]);
+        snapshot.media_inhibitors = BlameCategory::new(1, &["player".into()]);
+        snapshot.game_inhibitors = BlameCategory::new(1, &["Test Game".into()]);
+        snapshot.suspend_app_inhibitors = BlameCategory::new(1, &["handbrake".into()]);
+        snapshot.suspend_media_inhibitors = BlameCategory::new(1, &[]);
+        let rendered = snapshot.render_human();
+        for line in [
+            "Manual pause: active",
+            "System pause: active",
+            "Browser source capture: active",
+            "Applications: 2 (vlc, mpv)",
+            "Media: 1 (player)",
+            "Games: 1 (Test Game)",
+            "Suspend-only applications: 1 (handbrake)",
+            "Suspend-only media: 1 (identity unavailable)",
+            "Result: an automatic idle action is currently blocked",
+        ] {
+            assert!(rendered.contains(line), "missing {line}: {rendered}");
+        }
+        assert!(!rendered.contains("inactive"));
+        assert!(!rendered.contains(": none"));
+        snapshot.manual_pause = false;
+        assert!(!snapshot.render_human().contains("Manual pause:"));
+    }
+
+    #[test]
+    fn transient_block_without_an_identified_category_is_not_reported_clear() {
+        let mut snapshot = empty_snapshot();
+        snapshot.progression_blocked = true;
+        assert!(
+            snapshot
+                .render_human()
+                .contains("Result: an automatic idle action is currently blocked")
+        );
+        assert!(!snapshot.render_human().contains("No current blockers"));
+    }
+
+    #[test]
+    fn portal_and_login1_holds_keep_diagnostic_details() {
+        let mut snapshot = empty_snapshot();
+        snapshot.progression_blocked = true;
+        snapshot.dbus_holds.push(DbusHold {
+            status: "live".into(),
+            protocol: "org.freedesktop.portal.Inhibit".into(),
+            source: "portal-request".into(),
+            sender: ":1.9".into(),
+            application: Some("Voice chat".into()),
+            process: Some("chat".into()),
+            pid: Some(99),
+            reason: Some("screen sharing".into()),
+            flags: Some(8),
+            started_at_ms: 1_000,
+            age_ms: 65_000,
+            cookie: None,
+            handle: Some("/portal/request/1".into()),
+        });
+        snapshot.login1_idle_holds.push(Login1IdleHold {
+            status: "live".into(),
+            what: "idle".into(),
+            who: "backup".into(),
+            why: "saving files".into(),
+            mode: "block".into(),
+            uid: 1000,
+            pid: 42,
+            process: Some("backup".into()),
+            started_at_ms: 1_000,
+            age_ms: 65_000,
+        });
+        let rendered = snapshot.render_human();
+        for detail in [
+            "D-Bus holds: 1 live",
+            "Voice chat via org.freedesktop.portal.Inhibit [live], age 1m 5s",
+            "reason: screen sharing",
+            "flags: 8",
+            "handle: /portal/request/1",
+            "login1 idle holds: 1 blocking suspend",
+            "backup [live], age 1m 5s, reason: saving files, pid: 42",
+        ] {
+            assert!(rendered.contains(detail), "missing {detail}: {rendered}");
+        }
+        assert!(!rendered.contains("Applications:"));
+    }
 
     #[test]
     fn human_output_distinguishes_live_unresolved_dbus_hold() {

@@ -36,7 +36,7 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
     out.push_str(&format!("Profile: {}\n", profile_label(state)));
     out.push_str(&format!("Plan Source: {:?}\n", state.plan_source()));
     out.push_str(&render_gamepad(state, cfg_opt, now_ms));
-    out.push_str(&render_games(state));
+    out.push_str(&render_games(state, false));
 
     let paused_reason = if state.is_locked() {
         Some("locked")
@@ -63,32 +63,14 @@ fn render_status(state: &State, cfg_opt: Option<&Config>, now_ms: u64) -> String
         }
     }
 
-    let app = state.app_inhibitor_count();
-    let media = state.media_inhibitor_count();
-    let suspend_app = state.suspend_app_inhibitor_count();
-    let suspend_media = state.suspend_media_inhibitor_count();
-    let login1_idle = state.login1_idle_holds().len();
-
-    out.push_str(&format!(
-        "Manual Pause: {}\n",
-        yesno(state.manually_paused())
-    ));
     out.push_str(&format!("Paused: {}\n", yesno(state.paused())));
-    out.push_str(&format!("Apps Inhibiting: {}\n", app));
-    out.push_str(&format!("Media Players Playing: {}\n", media));
-    out.push_str(&format!("Apps Blocking Suspend: {}\n", suspend_app));
-    out.push_str(&format!(
-        "Media Players Blocking Suspend: {}\n",
-        suspend_media
-    ));
-    out.push_str(&format!(
-        "login1 Idle Inhibitors Blocking Suspend: {}\n",
-        login1_idle
-    ));
-    out.push_str(&format!(
-        "D-Bus Inhibiting: {}\n",
-        yesno(!state.dbus_holds().is_empty() || !state.login1_idle_holds().is_empty())
-    ));
+    if state.paused() || state.browser_activity_active(now_ms) {
+        out.push_str("Blockers: idle progression (see stasis blame)\n");
+    } else if state.suspend_inhibitors_active() {
+        out.push_str("Blockers: automatic suspend (see stasis blame)\n");
+    } else {
+        out.push_str("Blockers: none\n");
+    }
 
     if let Some(cfg) = cfg_opt {
         if let Some(line) = next_step_line(cfg, state, now_ms) {
@@ -108,7 +90,7 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     t.push_str(&format!("Profile: {}\n", profile_label(state)));
     t.push_str(&format!("Plan Source: {:?}\n", state.plan_source()));
     t.push_str(&render_gamepad(state, cfg_opt, now_ms));
-    t.push_str(&render_games(state));
+    t.push_str(&render_games(state, true));
 
     if state.is_locked() {
         t.push_str("State: locked\n");
@@ -163,20 +145,21 @@ fn render_tooltip_compact(state: &State, cfg_opt: Option<&Config>, now_ms: u64) 
     t
 }
 
-fn render_games(state: &State) -> String {
+fn render_games(state: &State, include_blockers: bool) -> String {
     let info = state.games();
     let running = info
         .running
         .iter()
         .map(|game| game.title.as_str())
         .collect::<Vec<_>>();
-    let mut text = format!(
-        "Game Catalogue: {} entries\nGames Inhibiting: {}\n",
-        info.catalogue_entries,
-        running.len()
-    );
-    if !running.is_empty() {
-        text.push_str(&format!("Running Games: {}\n", running.join(", ")));
+    let mut text = format!("Game Catalogue: {} entries\n", info.catalogue_entries);
+    // Keep the JSON tooltip contract used by panels and the tray. Terminal
+    // blocker counts and identities belong to `blame` instead.
+    if include_blockers {
+        text.push_str(&format!("Games Inhibiting: {}\n", running.len()));
+        if !running.is_empty() {
+            text.push_str(&format!("Running Games: {}\n", running.join(", ")));
+        }
     }
     if !info.ignored.is_empty() {
         text.push_str(&format!(

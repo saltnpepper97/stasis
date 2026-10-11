@@ -408,11 +408,22 @@ still runs immediately.
 `stasis resume` releases only the manual pause. Repeated requests are harmless;
 lid, sleep, and inhibitor holds still apply.
 
-`stasis blame` explains why an idle action is held. It names active
+`stasis info` shows session state, profile and plan source, the next action and
+countdown, controller activity, game detection diagnostics, and effective
+configuration. A brief blocker summary points to `stasis blame` for details.
+Eligible running-game names and inhibitor counts are shown by `blame` rather
+than repeated in the terminal `info` output.
+
+`stasis blame` explains why an idle action is held. It shows only active
 manual/system pauses, matched applications and media, suspend-only blockers,
 live D-Bus inhibit cookies or portal request handles, and login1 idle holds.
+An unblocked session prints `No current blockers`. Suspend-only blockers remain
+labelled separately so they are not mistaken for a full-plan pause.
 The `--json` form is a versioned snapshot for scripts. Active login1 idle holds
 are also included structurally in `stasis info --json`.
+Both JSON formats retain their fields, including inactive categories in
+`blame --json` and the detailed tooltip used by panels and the tray in
+`info --json`.
 
 `stasis tray` runs an optional StatusNotifier tray frontend. It does not replace
 `stasis info --json`; Waybar and other status bars can keep using the JSON output
