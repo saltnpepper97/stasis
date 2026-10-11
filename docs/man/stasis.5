@@ -22,6 +22,15 @@ Laptop AC plan (from \fBdefault:\fR \-> \fBac:\fR).
 Laptop battery plan (from \fBdefault:\fR \-> \fBbattery:\fR).
 
 Profiles may override globals and steps using \fBoverlay\fR or \fBfresh\fR mode.
+.PP
+Stasis creates a missing user config on first run. Existing configs are never
+rewritten, migrated, or backed up. Omitted settings use built-in defaults in
+memory; explicit values are preserved. Edit the config and run
+\fBstasis reload\fR to apply changes.
+.PP
+Legacy \fBenable_loginctl\fR and \fBlisten_browser_dbus_inhibit\fR names remain
+readable as aliases for \fBenable_loginctl_integration\fR and
+\fBenable_dbus_inhibit\fR. Current names take precedence when both are present.
 
 .SH GLOBAL KEYS
 Global keys live directly under a config block (typically \fBdefault:\fR or a profile).
@@ -76,8 +85,8 @@ touchpads are ignored. Requires read access to the controller's
 Devices are never grabbed, so games receive input normally.
 .PP
 May be overridden by profiles. Reload and profile selection update monitoring
-without restarting Stasis. Missing settings are backfilled with a config
-backup; explicit false values are preserved.
+without restarting Stasis. An omitted setting defaults to true in memory
+without changing the config file; explicit false values are preserved.
 .PP
 Controller input also works outside games. The tray and \fBstasis info\fR show
 controller names and recent input. \fBstasis info --json\fR includes a

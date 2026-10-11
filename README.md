@@ -145,6 +145,13 @@ Start the daemon:
 
     stasis
 
+Stasis creates a desktop or laptop config on first run if the user config is
+missing. Existing configs are never rewritten, migrated, or backed up. Missing
+settings use built-in defaults in memory, while explicit values are preserved.
+The legacy names `enable_loginctl` and `listen_browser_dbus_inhibit` remain
+readable; current setting names take precedence when both are present. Edit
+your config yourself and run `stasis reload` to apply changes.
+
 The full quick-start guide, configuration reference, and integration examples
 are available at https://saltnpepper97.github.io/stasis-site/.
 
@@ -295,8 +302,8 @@ your distribution's controller-specific udev access rules. Stasis never grabs
 the device, so games continue receiving input normally.
 
 Set `monitor_gamepad false` under `default:` or a profile to disable monitoring.
-Changes take effect on `stasis reload` or profile selection. Existing configs
-receive the missing setting through the usual backup-preserving migration;
+Changes take effect on `stasis reload` or profile selection. If omitted,
+`monitor_gamepad` defaults to `true` in memory without changing the file;
 explicit values are kept.
 
 Controller input works outside games too. The tray tooltip and `stasis info`

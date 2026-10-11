@@ -121,25 +121,6 @@ pub async fn run(args: Args) -> Result<(), AnyError> {
         config_path = crate::config::resolve_default_config_path();
     }
 
-    if config_path.exists() {
-        match crate::config::migrate::migrate_in_place(&config_path) {
-            Ok(crate::config::migrate::MigrateOutcome::Migrated {
-                backup_path,
-                changes,
-            }) => {
-                eventline::info!(
-                    "migrated config in place ({}); backup at {}",
-                    changes.join(", "),
-                    backup_path.display()
-                );
-            }
-            Ok(crate::config::migrate::MigrateOutcome::Current) => {}
-            Err(e) => {
-                eventline::error!("config migration failed: {e}");
-            }
-        }
-    }
-
     let cfg_file = crate::config::load_from_path(&config_path).map_err(|e| {
         eventline::error!("{e}");
         e

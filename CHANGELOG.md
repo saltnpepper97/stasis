@@ -12,14 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `extra_games [ ... ]` supplements discovery with executable names, app IDs, installation paths, or regexes for games installed outside a supported launcher or missed by metadata detection. The blacklist applies to these additions too, and `monitor_games false` disables both sources.
 - Game catalogue size, active/ignored games, and detection errors are exposed through `stasis info` and JSON; the tray tooltip displays running games and `stasis blame` reports game holds separately.
 
-- `pause_on_lid_close false` allows the configured idle plan to run while the lid is closed, starting a fresh countdown on closure and cancelling it on reopening. The default remains `true`; profiles, generated configs, and compatibility backfill include the setting ([#86](https://github.com/saltnpepper97/stasis/issues/86)).
+- `pause_on_lid_close false` allows the configured idle plan to run while the lid is closed, starting a fresh countdown on closure and cancelling it on reopening. The default remains `true`; profiles and generated configs include the setting, and omitted values use the runtime default ([#86](https://github.com/saltnpepper97/stasis/issues/86)).
 
 - Linux gamepad activity detection (`monitor_gamepad true` by default), including hotplug, buttons, D-pad, sticks, and triggers. Held controls keep the session active; neutral drift is filtered. Idle timing resumes when controls are released, without requiring per-game rules or a new compositor idle event. Requires read access to the controller's input device.
-- Gamepad monitoring is configurable in profiles and on reload; examples, generated configs, and existing-config backfill include the setting without overwriting explicit choices.
+- Gamepad monitoring is configurable in profiles and on reload; examples and generated configs include the setting, and omitted values use the runtime default without changing existing configs.
 - The tray, `stasis info`, and its JSON output report monitored controller names and recent input, including the last input timestamp. Controller activity works outside games as well as during play.
 
 ### Changed
 
+- Configuration loading now matches Halley's create-only behavior: existing files and symlinks are never rewritten or backed up, and missing settings use built-in defaults in memory. Legacy setting names remain readable without migration. First-run creation preserves existing paths, including dangling symlinks and configs created concurrently.
 - Native PipeWire audio monitoring keeps `pw-dump --monitor` connected and reads state changes instead of repeatedly launching and parsing full registry dumps, reducing background CPU usage. Disconnects preserve the previous observation until reconnection.
 - Audio monitoring prefers native PipeWire through `pw-dump`, with direct native PulseAudio through JSON `pactl` as a fallback. Stasis no longer depends on `pipewire-pulse`; compatibility servers are rejected as PulseAudio fallbacks. Media and browser microphone monitoring share stream parsing, preserve observations on bounded query failures, and reconnect after server availability changes.
 - The tray right-click menu shows only the status row and actions; controller and game details remain in the hover tooltip.

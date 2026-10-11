@@ -2,7 +2,6 @@
 // License: GPL-3.0-only
 
 pub mod bootstrap;
-pub mod migrate;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -132,10 +131,21 @@ fn parse_config_file(rc: &RuneConfig) -> Result<ConfigFile, String> {
 
             // Global login1 sleep/wake integration toggle. Lock state uses
             // always-on LockedHint plus process-lifetime fallback.
-            cfg.enable_loginctl_integration =
-                rc.get_or("default.enable_loginctl_integration", false);
+            cfg.enable_loginctl_integration = opt_bool_with_legacy_key(
+                rc,
+                "default",
+                "enable_loginctl_integration",
+                "enable_loginctl",
+            )?
+            .unwrap_or_else(|| has_legacy_loginctl_step(rc, ""));
             // Session D-Bus inhibit monitor toggle.
-            cfg.enable_dbus_inhibit = rc.get_or("default.enable_dbus_inhibit", true);
+            cfg.enable_dbus_inhibit = opt_bool_with_legacy_key(
+                rc,
+                "default",
+                "enable_dbus_inhibit",
+                "listen_browser_dbus_inhibit",
+            )?
+            .unwrap_or(true);
 
             // scalars/lists under default
             cfg.pre_suspend_command = opt_nullable_string(rc, "default.pre_suspend_command")?;
@@ -295,10 +305,11 @@ fn parse_plan_block(
             );
         }
 
-        // Legacy key guard: use_loginctl removed (global enable_loginctl_integration replaces it).
+        // Legacy per-step flags still enable global login1 integration when
+        // no explicit global setting is present. The file stays unchanged.
         if rc.has(&format!("{base}.use_loginctl")) {
             eventline::warn!(
-                "config: `{}` uses use-loginctl, but use-loginctl was removed; use `default.enable_loginctl_integration` instead",
+                "config: `{}` uses legacy use-loginctl; prefer global `enable_loginctl_integration true`",
                 base
             );
         }
@@ -413,8 +424,13 @@ fn parse_profiles(rc: &RuneConfig) -> Result<Vec<Profile>, String> {
 
         // globals (profile-level overrides)
         pc.enable_loginctl_integration =
-            opt_bool(rc, format!("{name}.enable_loginctl_integration"))?;
-        pc.enable_dbus_inhibit = opt_bool(rc, format!("{name}.enable_dbus_inhibit"))?;
+            opt_bool_with_legacy_key(rc, &name, "enable_loginctl_integration", "enable_loginctl")?;
+        pc.enable_dbus_inhibit = opt_bool_with_legacy_key(
+            rc,
+            &name,
+            "enable_dbus_inhibit",
+            "listen_browser_dbus_inhibit",
+        )?;
         pc.pre_suspend_command = opt_nullable_string2(rc, format!("{name}.pre_suspend_command"))?;
         pc.prepare_sleep_command =
             opt_nullable_string2(rc, format!("{name}.prepare_sleep_command"))?;
@@ -598,6 +614,35 @@ fn opt_bool(rc: &RuneConfig, path: impl AsRef<str>) -> Result<Option<bool>, Stri
     let p = path.as_ref();
     rc.get_optional::<bool>(p)
         .map_err(|e| format!("config error at {}: {e}", p))
+}
+
+/// Accept renamed settings while giving the current spelling precedence.
+/// Compatibility is resolved in memory; user-owned config files are read-only.
+fn opt_bool_with_legacy_key(
+    rc: &RuneConfig,
+    block: &str,
+    key: &str,
+    legacy_key: &str,
+) -> Result<Option<bool>, String> {
+    let path = format!("{block}.{key}");
+    if rc.has(&path) {
+        opt_bool(rc, path)
+    } else {
+        opt_bool(rc, format!("{block}.{legacy_key}"))
+    }
+}
+
+/// Preserve the old migrator's global login1 opt-in for legacy step flags,
+/// including steps nested in AC/battery plans or profiles.
+fn has_legacy_loginctl_step(rc: &RuneConfig, block: &str) -> bool {
+    rc.get_keys(block).unwrap_or_default().iter().any(|key| {
+        let path = if block.is_empty() {
+            key.clone()
+        } else {
+            format!("{block}.{key}")
+        };
+        (key == "use_loginctl" && rc.get_or(&path, false)) || has_legacy_loginctl_step(rc, &path)
+    })
 }
 
 fn opt_u64(rc: &RuneConfig, path: impl AsRef<str>) -> Result<Option<u64>, String> {
@@ -813,6 +858,90 @@ mod tests {
     fn parse(contents: &str) -> Result<ConfigFile, String> {
         let rc = RuneConfig::from_str(contents).expect("test config should be valid Rune");
         parse_config_file(&rc)
+    }
+
+    #[test]
+    fn legacy_global_names_work_in_defaults_and_profiles() {
+        let cfg = parse(
+            r#"default:
+  enable_loginctl true
+  listen_browser_dbus_inhibit false
+end
+legacy:
+  enable_loginctl false
+  listen_browser_dbus_inhibit true
+end
+fresh:
+  mode "fresh"
+  enable_loginctl true
+  listen_browser_dbus_inhibit false
+end
+"#,
+        )
+        .unwrap();
+        assert!(cfg.default.enable_loginctl_integration);
+        assert!(!cfg.default.enable_dbus_inhibit);
+        let legacy = cfg
+            .effective_for(Some("legacy"), PlanSource::Desktop)
+            .unwrap();
+        assert!(!legacy.enable_loginctl_integration);
+        assert!(legacy.enable_dbus_inhibit);
+        let fresh = cfg
+            .effective_for(Some("fresh"), PlanSource::Desktop)
+            .unwrap();
+        assert!(fresh.enable_loginctl_integration);
+        assert!(!fresh.enable_dbus_inhibit);
+    }
+
+    #[test]
+    fn current_names_take_precedence_over_legacy_names() {
+        let fields = "  enable_loginctl true\n  enable_loginctl_integration false\n  listen_browser_dbus_inhibit false\n  enable_dbus_inhibit true\n";
+        let cfg = parse(&format!("default:\n{fields}end\noverride:\n{fields}end\n")).unwrap();
+        for profile in [None, Some("override")] {
+            let effective = cfg.effective_for(profile, PlanSource::Desktop).unwrap();
+            assert!(!effective.enable_loginctl_integration);
+            assert!(effective.enable_dbus_inhibit);
+        }
+    }
+
+    #[test]
+    fn legacy_step_loginctl_opt_in_respects_explicit_global_opt_out() {
+        for block in [
+            "default",
+            "default.ac",
+            "default.battery",
+            "legacy",
+            "legacy.ac",
+        ] {
+            let mut text = if block.starts_with("legacy") {
+                "default:\nend\n".to_string()
+            } else {
+                String::new()
+            };
+            let parts: Vec<_> = block.split('.').collect();
+            for part in &parts {
+                text.push_str(&format!("{part}:\n"));
+            }
+            text.push_str("suspend:\n  timeout 60\n  use_loginctl true\nend\n");
+            text.push_str(&"end\n".repeat(parts.len()));
+            assert!(parse(&text).unwrap().default.enable_loginctl_integration);
+            for key in ["enable_loginctl_integration", "enable_loginctl"] {
+                let opted_out =
+                    text.replacen("default:\n", &format!("default:\n  {key} false\n"), 1);
+                assert!(
+                    !parse(&opted_out)
+                        .unwrap()
+                        .default
+                        .enable_loginctl_integration
+                );
+            }
+        }
+        assert!(
+            !parse("default:\n  suspend:\n    timeout 60\n    use_loginctl false\n  end\nend\n")
+                .unwrap()
+                .default
+                .enable_loginctl_integration
+        );
     }
 
     #[test]
