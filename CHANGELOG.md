@@ -5,22 +5,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - Unreleased
+
 ### Added
 
 - Automatic running-game inhibition using `lib_game_detector`, enabled by `monitor_games true` by default. Installed games are discovered from supported launchers and matched against game processes, Wine/Proton identities, Minecraft instance arguments, and Steam app windows without per-game name lists.
 - `game_blacklist [ ... ]` ignores selected detected titles, IDs, sources, or installation paths using the same string/regex syntax as the media blacklist. Defaults and profiles support the settings, and reload updates them without restarting Stasis.
 - `extra_games [ ... ]` supplements discovery with executable names, app IDs, installation paths, or regexes for games installed outside a supported launcher or missed by metadata detection. The blacklist applies to these additions too, and `monitor_games false` disables both sources.
 - Game catalogue size, active/ignored games, and detection errors are exposed through `stasis info` and JSON; the tray tooltip displays running games and `stasis blame` reports game holds separately.
-
 - `pause_on_lid_close false` allows the configured idle plan to run while the lid is closed, starting a fresh countdown on closure and cancelling it on reopening. The default remains `true`; profiles and generated configs include the setting, and omitted values use the runtime default ([#86](https://github.com/saltnpepper97/stasis/issues/86)).
-
 - Linux gamepad activity detection (`monitor_gamepad true` by default), including hotplug, buttons, D-pad, sticks, and triggers. Held controls keep the session active; neutral drift is filtered. Idle timing resumes when controls are released, without requiring per-game rules or a new compositor idle event. Requires read access to the controller's input device.
 - Gamepad monitoring is configurable in profiles and on reload; examples and generated configs include the setting, and omitted values use the runtime default without changing existing configs.
 - The tray, `stasis info`, and its JSON output report monitored controller names and recent input, including the last input timestamp. Controller activity works outside games as well as during play.
 
 ### Changed
 
-- Refreshed the Stasis logo and tray icon with the transparent blue ribbon hourglass mark.
+- Refreshed the Stasis logo and tray icon with the transparent blue ribbon hourglass mark. The tray asset is derived from the refined project logo.
 - Terminal `info` focuses on session state, timing, devices, game detection diagnostics, and effective configuration, with a brief blocker summary. Repeated inhibitor counts and eligible running-game names belong to `blame`, which now shows only active blockers and prints one line when none are present. Suspend-only labels, blocker identities, D-Bus/login1 diagnostics, both JSON formats, and the panel/tray tooltip remain available.
 - Configuration loading now matches Halley's create-only behavior: existing files and symlinks are never rewritten or backed up, and missing settings use built-in defaults in memory. Legacy setting names remain readable without migration. First-run creation preserves existing paths, including dangling symlinks and configs created concurrently.
 - Native PipeWire audio monitoring keeps `pw-dump --monitor` connected and reads state changes instead of repeatedly launching and parsing full registry dumps, reducing background CPU usage. Disconnects preserve the previous observation until reconnection.
@@ -28,15 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The tray right-click menu shows only the status row and actions; controller and game details remain in the hover tooltip.
 - Generated configs and examples use automatic game detection instead of broad Steam/Windows executable rules. Existing user application rules remain explicit independent holds; removing a matching legacy game rule is necessary for a game blacklist entry to release that hold.
 - Bundled SQLite supports launcher metadata discovery without adding a system SQLite runtime dependency. Distribution notes and the AGPL license text accompany the new dependency.
-
 - Combined the tray's Pause and Resume entries into one action that follows the manual pause state.
 
 ### Fixed
 
+- Manual pages now describe the combined Pause/Resume tray action and supplemental game rules, with corrected formatting for the status JSON command.
 - Starting with an already-closed lid no longer locks or pauses the session with the default lid policy; normal idle timers continue. Explicit lid grace mode still handles closed-lid startup, and actual lid transitions retain their configured behavior. Redundant manual resume requests no longer log `InvalidState(NotPaused)`; resume responses no longer claim that all pause sources were cleared ([#106](https://github.com/saltnpepper97/stasis/issues/106)).
 - Nix builds resolve process-test tools through `PATH` with an explicit coreutils test dependency, instead of requiring `/usr/bin/sleep` or `/bin/sh`. Package metadata now lists the source and linked library's GPL/AGPL licenses ([#104](https://github.com/saltnpepper97/stasis/issues/104)).
 - Lid state is read at startup and reconciled before sleep resume, including laptops started or woken with the lid already closed. Duplicate lid/compositor reports do not restart the closed-lid countdown, and opening a lid cannot release an active sleep pause.
-
 - App inhibition on Halley now accepts its current window-list JSON array as well as the legacy wrapped format, restoring game detection for rules such as `steam_app_.*`.
 
 ## [1.6.3] - 2026-09-06

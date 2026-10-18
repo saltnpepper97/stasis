@@ -1,4 +1,4 @@
-.TH STASIS 1 "October 2026" "stasis" "User Commands"
+.TH STASIS 1 "October 2026" "Stasis 1.7.0" "User Commands"
 .SH NAME
 stasis \- idle manager with ordered, per-step timers and profile overlays
 .SH SYNOPSIS
@@ -31,7 +31,9 @@ Profiles that overlay or replace configuration.
 .IP \(bu 2
 Manual pause/resume and inhibition controls.
 .IP \(bu 2
-Automatic running-game detection with an optional blacklist.
+Automatic running-game detection with an optional blacklist and supplemental game rules.
+.IP \(bu 2
+Controller input tracking, including held buttons, sticks, and triggers.
 
 .SH OPTIONS
 .TP
@@ -46,6 +48,12 @@ Disable console logging/output.
 .TP
 .B \-\-timestamps
 Include timestamps in console output.
+.TP
+.BR \-h ", " \-\-help
+Print command-line help.
+.TP
+.BR \-V ", " \-\-version
+Print the Stasis version.
 
 .SH COMMANDS
 If no command is provided, \fBstasis\fR runs the idle manager.
@@ -125,11 +133,13 @@ Toggle manual idle inhibition. When inhibited, timers are paused.
 .B tray
 Run the optional StatusNotifier system tray frontend.
 .PP
-The tray shows the current Stasis state in its tooltip and exposes a menu for
-toggle inhibit, pause, resume, reload config, and quitting only the tray process.
+The tooltip shows session state, game details, and controller activity. The
+menu includes a status row, toggle inhibition, one Pause or Resume action
+following the manual pause state, reload config, and quitting only the tray
+process. Only one tray instance is allowed per desktop session.
 .PP
 This command requires a StatusNotifier tray host, such as Waybar's tray module,
-KDE Plasma, or another panel. It does not replace Bstasis info --jsonR for
+KDE Plasma, or another panel. It does not replace \fBstasis info --json\fR for
 Waybar/status-bar integrations.
 
 .TP

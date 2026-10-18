@@ -1,4 +1,4 @@
-.TH STASIS 5 "October 2026" "stasis" "File Formats"
+.TH STASIS 5 "October 2026" "Stasis 1.7.0" "File Formats"
 .SH NAME
 stasis \- configuration format for the Stasis idle manager
 .SH SYNOPSIS
@@ -128,7 +128,7 @@ Matches game executable/script paths, Proton/Wine game identities, Minecraft
 instance arguments, and Steam app windows. Generic launcher/runtime helpers
 are excluded. Halley, Hyprland, and Niri supply a Steam app-ID window fallback
 when metadata is unavailable. Unsupported sources, missing paths, or ambiguous
-shared directories can still require an explicit application rule.
+shared directories can still require a supplemental \fBextra_games\fR entry.
 .PP
 May be overridden by profiles. Reload updates the setting without a restart.
 The tray and \fBstasis info\fR show game status; the JSON \fBgames\fR object
@@ -148,7 +148,7 @@ Profiles replace the list; an empty list clears inherited exclusions. Reload
 applies changes to running observations. Launcher-registered software such as
 Aseprite can also be excluded here.
 .PP
-This filters only automatic game holds. Explicit inhibit_apps rules, media,
+This filters automatic and supplemental game holds. Explicit inhibit_apps rules, media,
 D-Bus, compositor inhibitors, and controller input remain independent. Remove
 old broad game rules such as \fBr"steam_app_.*"\fR if the blacklist should
 control that game's automatic hold.
