@@ -5,6 +5,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed direct dependencies and the lockfile, including `zbus` 6, `rune-cfg` 0.8, `eventline` 0.10, `dirs` 7, and updated CLI, async, serialization, regex, tray, and Wayland crates. The game-discovery library remains pinned to 0.0.39.
+- Updated D-Bus connections, proxy/match-rule builders, and wire types for zbus 6. Eventline setup explicitly retains the existing shared logging levels, file rotation, and journal-retention behavior.
+- Declared the existing Rust 1.89 minimum in package metadata and verified the updated dependency set on that toolchain.
+
+### Fixed
+
+- Preserved tray single-instance ownership and uncached lid monitoring while adapting to deferred D-Bus builder validation. Regression coverage exercises private-bus name ownership and legacy configuration interpolation with shell punctuation.
+
 ## [1.7.0] - 2026-10-18
 
 ### Added

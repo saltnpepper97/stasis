@@ -861,6 +861,37 @@ mod tests {
     }
 
     #[test]
+    fn quoted_variables_and_shell_punctuation_survive_config_loading() {
+        let cfg = parse(
+            r#"notice "notify-send 'Ready'"
+delay 17
+default:
+  startup:
+    timeout 0
+    command "$notice"
+  end
+  suspend:
+    timeout delay
+    command "printf '%s' '$UNSET_SHELL_NAME.' '${UNSET_SHELL_NAME}' '$(date)' '$?' '$1' '$$'"
+  end
+end
+"#,
+        )
+        .unwrap();
+        let effective = cfg.effective_for(None, PlanSource::Desktop).unwrap();
+        let plan = &effective.plan;
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].kind, PlanStepKind::Startup);
+        assert_eq!(plan[0].command.as_deref(), Some("notify-send 'Ready'"));
+        assert_eq!(plan[1].kind, PlanStepKind::Suspend);
+        assert_eq!(plan[1].timeout_seconds, 17);
+        assert_eq!(
+            plan[1].command.as_deref(),
+            Some("printf '%s' '$UNSET_SHELL_NAME.' '${UNSET_SHELL_NAME}' '$(date)' '$?' '$1' '$$'")
+        );
+    }
+
+    #[test]
     fn legacy_global_names_work_in_defaults_and_profiles() {
         let cfg = parse(
             r#"default:

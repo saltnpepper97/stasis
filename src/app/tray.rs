@@ -102,6 +102,47 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "requires dbus-daemon; uses only a private bus"]
+    async fn private_bus_tray_name_is_exclusive_and_reusable() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Child, Command, Stdio};
+
+        struct PrivateBus(Child);
+        impl Drop for PrivateBus {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut bus = PrivateBus(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let claim = || {
+            super::claim_single_instance_with(zbus::connection::Builder::address(address.trim()))
+        };
+        let first = claim().await.unwrap().expect("first tray owns the name");
+        assert!(
+            claim().await.unwrap().is_none(),
+            "duplicate tray must exit cleanly"
+        );
+        assert!(first.release_name(super::TRAY_BUS_NAME).await.unwrap());
+        assert!(
+            claim().await.unwrap().is_some(),
+            "name can be claimed after release"
+        );
+    }
+
     #[test]
     fn manual_pause_has_requested_title() {
         assert_eq!(manual_snapshot().state_title(), "Stasis paused (manually)");
@@ -307,8 +348,14 @@ pub async fn run() -> Result<(), AnyError> {
 }
 
 async fn claim_single_instance() -> Result<Option<zbus::Connection>, zbus::Error> {
-    let builder = zbus::connection::Builder::session()?
-        .name(TRAY_BUS_NAME)?
+    claim_single_instance_with(zbus::connection::Builder::session()).await
+}
+
+async fn claim_single_instance_with(
+    builder: zbus::connection::Builder<'_>,
+) -> Result<Option<zbus::Connection>, zbus::Error> {
+    let builder = builder
+        .name(TRAY_BUS_NAME)
         .allow_name_replacements(false)
         .replace_existing_names(false);
     match builder.build().await {
