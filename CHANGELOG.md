@@ -5,6 +5,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Gamepad axes now use meaningful movement instead of assumed stick/trigger resting positions. Axis activity lasts at most two minutes after the last meaningful change, including release, before normal idle countdowns resume; digital buttons still count while held. Noise filtering uses 7.5% of the full axis range or larger driver flat/fuzz values. No new configuration or controller-specific mappings are required.
+- Refreshed direct dependencies and the lockfile, including `zbus` 6, `rune-cfg` 0.8, `eventline` 0.10, `dirs` 7, and updated CLI, async, serialization, regex, tray, and Wayland crates. The game-discovery library remains pinned to 0.0.39.
+- Updated D-Bus connections, proxy/match-rule builders, and wire types for zbus 6. Eventline setup explicitly retains the existing shared logging levels, file rotation, and journal-retention behavior.
+- Declared the existing Rust 1.89 minimum in package metadata and verified the updated dependency set on that toolchain.
+
+### Fixed
+
+- Controllers with alternate axis layouts, including centered sticks on `ABS_Z`/`ABS_RZ`, no longer synthesize activity indefinitely while untouched. Initial axis values alone never count as input, and small jitter cannot renew the bounded activity window ([#107](https://github.com/saltnpepper97/stasis/issues/107)).
+- Preserved tray single-instance ownership and uncached lid monitoring while adapting to deferred D-Bus builder validation. Regression coverage exercises private-bus name ownership and legacy configuration interpolation with shell punctuation.
+
 ## [1.7.0] - 2026-10-18
 
 ### Added

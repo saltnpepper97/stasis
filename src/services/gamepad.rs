@@ -10,13 +10,16 @@ use std::time::Duration;
 use evdev::{AbsInfo, AbsoluteAxisCode, Device, EventSummary, InputEvent, KeyCode};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
-use tokio::time::{MissedTickBehavior, interval};
+use tokio::time::{Instant, MissedTickBehavior, interval};
 
 use crate::core::events::{ActivityKind, Event};
 use crate::core::manager_msg::ManagerMsg;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const ACTIVITY_INTERVAL: Duration = Duration::from_millis(250);
+// Axis codes do not reliably identify a stick or trigger's resting position.
+// Only meaningful motion starts this window; an unchanged value cannot renew it.
+const AXIS_ACTIVITY_WINDOW: Duration = Duration::from_secs(120);
 
 fn controller_button(code: KeyCode) -> bool {
     matches!(code.0, 0x120..=0x13f | 0x220..=0x223 | 0x2c0..=0x2e7)
@@ -56,60 +59,68 @@ fn discover_controllers() -> io::Result<Vec<PathBuf>> {
 
 #[derive(Debug)]
 struct Axis {
-    value: i32,
-    neutral: i64,
-    deadzone: i64,
+    reference: i64,
+    threshold: i64,
+    last_motion: Option<Instant>,
 }
 
 impl Axis {
     fn new(code: AbsoluteAxisCode, info: AbsInfo) -> Option<Self> {
         use AbsoluteAxisCode as A;
+        if !matches!(
+            code,
+            A::ABS_X
+                | A::ABS_Y
+                | A::ABS_Z
+                | A::ABS_RX
+                | A::ABS_RY
+                | A::ABS_RZ
+                | A::ABS_WHEEL
+                | A::ABS_GAS
+                | A::ABS_BRAKE
+                | A::ABS_THROTTLE
+                | A::ABS_HAT0X
+                | A::ABS_HAT0Y
+                | A::ABS_HAT1X
+                | A::ABS_HAT1Y
+                | A::ABS_HAT2X
+                | A::ABS_HAT2Y
+                | A::ABS_HAT3X
+                | A::ABS_HAT3Y
+        ) {
+            return None;
+        }
         let minimum = i64::from(info.minimum());
         let maximum = i64::from(info.maximum());
         let span = maximum - minimum;
         if span <= 0 {
             return None;
         }
-        let (neutral, deadzone) = match code {
-            A::ABS_X | A::ABS_Y | A::ABS_RX | A::ABS_RY | A::ABS_WHEEL => {
-                // Fifteen percent of stick travel on either side of centre.
-                ((minimum + maximum) / 2, span * 15 / 200)
-            }
-            A::ABS_Z | A::ABS_RZ | A::ABS_GAS | A::ABS_BRAKE | A::ABS_THROTTLE => {
-                // Triggers rest at the minimum, including signed ranges.
-                (minimum, span * 15 / 100)
-            }
-            A::ABS_HAT0X
-            | A::ABS_HAT0Y
-            | A::ABS_HAT1X
-            | A::ABS_HAT1Y
-            | A::ABS_HAT2X
-            | A::ABS_HAT2Y
-            | A::ABS_HAT3X
-            | A::ABS_HAT3Y => (0, 0),
-            _ => return None,
-        };
         Some(Self {
-            value: info.value(),
-            neutral,
-            deadzone: deadzone
+            // This is a motion reference, not a learned neutral position. A
+            // control held at attachment must not create activity on its own.
+            reference: i64::from(info.value()),
+            threshold: (span * 15 / 200)
                 .max(i64::from(info.flat()))
                 .max(i64::from(info.fuzz())),
+            last_motion: None,
         })
     }
 
-    fn active(&self) -> bool {
-        (i64::from(self.value) - self.neutral).abs() > self.deadzone
+    fn active(&self, now: Instant) -> bool {
+        self.last_motion
+            .is_some_and(|last| now.duration_since(last) < AXIS_ACTIVITY_WINDOW)
     }
 
-    fn update(&mut self, value: i32) -> bool {
-        if self.value == value {
+    fn update(&mut self, value: i32, now: Instant) -> bool {
+        if (i64::from(value) - self.reference).abs() <= self.threshold {
             return false;
         }
-        let was_active = self.active();
-        self.value = value;
-        // Centred drift does not count, but releasing a stick/trigger does.
-        was_active || self.active()
+        // Retain the reference through small changes so slow, deliberate
+        // movement accumulates, while bounded jitter cannot renew activity.
+        self.reference = i64::from(value);
+        self.last_motion = Some(now);
+        true
     }
 }
 
@@ -135,11 +146,11 @@ impl Controls {
         Ok(Self { buttons, axes })
     }
 
-    fn active(&self) -> bool {
-        !self.buttons.is_empty() || self.axes.values().any(Axis::active)
+    fn active(&self, now: Instant) -> bool {
+        !self.buttons.is_empty() || self.axes.values().any(|axis| axis.active(now))
     }
 
-    fn update(&mut self, event: InputEvent) -> bool {
+    fn update(&mut self, event: InputEvent, now: Instant) -> bool {
         match event.destructure() {
             EventSummary::Key(_, code, value) if controller_button(code) => match value {
                 0 => self.buttons.remove(&code),
@@ -149,7 +160,7 @@ impl Controls {
             EventSummary::AbsoluteAxis(_, code, value) => self
                 .axes
                 .get_mut(&code)
-                .is_some_and(|axis| axis.update(value)),
+                .is_some_and(|axis| axis.update(value, now)),
             _ => false,
         }
     }
@@ -166,12 +177,12 @@ async fn read_controller(device: Device, tx: mpsc::Sender<ManagerMsg>) -> io::Re
         tokio::select! {
             event = events.next_event() => {
                 // Device's synchronization layer recovers state after SYN_DROPPED.
-                pending_activity |= controls.update(event?);
+                pending_activity |= controls.update(event?, Instant::now());
             }
             _ = pulse.tick() => {
-                // A held button/stick/trigger remains activity even if the driver
-                // emits no further changes. Connection alone is never activity.
-                if pending_activity || controls.active() {
+                // Buttons have explicit press/release states. Axes get only a
+                // bounded window after motion, never activity from attachment.
+                if pending_activity || controls.active(Instant::now()) {
                     pending_activity = false;
                     if tx.send(ManagerMsg::Event(Event::UserActivity {
                         kind: ActivityKind::Gamepad,
@@ -314,30 +325,32 @@ mod tests {
     use tokio::time::timeout;
 
     fn virtual_controller() -> (VirtualDevice, PathBuf) {
+        virtual_controller_with_axes(&[
+            (
+                AbsoluteAxisCode::ABS_X,
+                AbsInfo::new(0, -32768, 32767, 16, 128, 0),
+            ),
+            (AbsoluteAxisCode::ABS_Z, AbsInfo::new(0, 0, 255, 0, 0, 0)),
+            (AbsoluteAxisCode::ABS_HAT0X, AbsInfo::new(0, -1, 1, 0, 0, 0)),
+        ])
+    }
+
+    fn virtual_controller_with_axes(
+        axes: &[(AbsoluteAxisCode, AbsInfo)],
+    ) -> (VirtualDevice, PathBuf) {
         let mut buttons = AttributeSet::new();
         buttons.insert(KeyCode::BTN_SOUTH);
-        let mut pad = VirtualDevice::builder()
+        let mut builder = VirtualDevice::builder()
             .unwrap()
             .name("Stasis gamepad regression test")
             .with_keys(&buttons)
-            .unwrap()
-            .with_absolute_axis(&UinputAbsSetup::new(
-                AbsoluteAxisCode::ABS_X,
-                AbsInfo::new(0, -32768, 32767, 16, 128, 0),
-            ))
-            .unwrap()
-            .with_absolute_axis(&UinputAbsSetup::new(
-                AbsoluteAxisCode::ABS_Z,
-                AbsInfo::new(0, 0, 255, 0, 0, 0),
-            ))
-            .unwrap()
-            .with_absolute_axis(&UinputAbsSetup::new(
-                AbsoluteAxisCode::ABS_HAT0X,
-                AbsInfo::new(0, -1, 1, 0, 0, 0),
-            ))
-            .unwrap()
-            .build()
             .unwrap();
+        for &(code, info) in axes {
+            builder = builder
+                .with_absolute_axis(&UinputAbsSetup::new(code, info))
+                .unwrap();
+        }
+        let mut pad = builder.build().unwrap();
         let path = pad
             .enumerate_dev_nodes_blocking()
             .unwrap()
@@ -409,9 +422,21 @@ mod tests {
         .expect("udev should make the test controller accessible")
     }
 
+    async fn advance_reader_time(rx: &mut mpsc::Receiver<ManagerMsg>, duration: Duration) {
+        // Let real evdev I/O settle before advancing only the reader's monotonic
+        // clock. This exercises the production two-minute bound without sleeping
+        // for minutes or changing its duration for tests.
+        tokio::time::sleep(ACTIVITY_INTERVAL).await;
+        while rx.try_recv().is_ok() {}
+        tokio::time::pause();
+        tokio::time::advance(duration).await;
+        tokio::time::resume();
+        while rx.try_recv().is_ok() {}
+    }
+
     #[tokio::test]
     #[ignore = "requires read/write access to /dev/uinput and generated input devices"]
-    async fn linux_input_reader_filters_drift_tracks_holds_and_disconnects() {
+    async fn linux_input_reader_filters_motion_bounds_axis_holds_and_disconnects() {
         let (mut pad, path) = virtual_controller();
         assert!(discover_controllers().unwrap().contains(&path));
         let (tx, mut rx) = mpsc::channel(32);
@@ -427,27 +452,40 @@ mod tests {
             (
                 *KeyEvent::new(KeyCode::BTN_SOUTH, 1),
                 *KeyEvent::new(KeyCode::BTN_SOUTH, 0),
+                false,
             ),
             (
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_X, 20000),
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_X, 0),
+                true,
             ),
             (
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 200),
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 0),
+                true,
             ),
             (
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, -1),
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, 0),
+                true,
             ),
         ];
-        for (press, release) in controls {
+        for (press, release, axis_based) in controls {
             pad.emit(&[press]).unwrap();
             for _ in 0..4 {
                 expect_activity(&mut rx, Duration::from_secs(1)).await;
             }
+            advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+            if axis_based {
+                expect_quiet(&mut rx).await;
+            } else {
+                expect_activity(&mut rx, Duration::from_secs(1)).await;
+            }
             pad.emit(&[release]).unwrap();
             expect_activity(&mut rx, Duration::from_secs(1)).await;
+            if axis_based {
+                advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+            }
             expect_quiet(&mut rx).await;
         }
         drop(pad);
@@ -458,6 +496,73 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires read/write access to /dev/uinput and generated input devices"]
+    async fn linux_input_reader_handles_alternate_layout_and_trigger_held_at_attachment() {
+        let positions = [
+            (AbsoluteAxisCode::ABS_X, 128),
+            (AbsoluteAxisCode::ABS_Y, 127),
+            (AbsoluteAxisCode::ABS_Z, 128),
+            (AbsoluteAxisCode::ABS_RZ, 127),
+            (AbsoluteAxisCode::ABS_GAS, 0),
+            (AbsoluteAxisCode::ABS_BRAKE, 0),
+        ];
+        let axes: Vec<_> = positions
+            .iter()
+            .map(|&(code, value)| (code, AbsInfo::new(value, 0, 255, 0, 15, 0)))
+            .collect();
+        let (mut pad, path) = virtual_controller_with_axes(&axes);
+        let initial_events: Vec<_> = positions
+            .iter()
+            .map(|&(code, value)| *AbsoluteAxisEvent::new(code, value))
+            .collect();
+        pad.emit(&initial_events).unwrap();
+        let device = open_when_ready(&path).await;
+        let state = device.get_absinfo().unwrap().collect::<HashMap<_, _>>();
+        for (code, value) in positions {
+            assert_eq!(state[&code].value(), value);
+        }
+        let (tx, mut rx) = mpsc::channel(32);
+        let reader = tokio::spawn(read_controller(device, tx));
+        expect_quiet(&mut rx).await;
+        advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+        expect_quiet(&mut rx).await;
+
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 200)])
+            .unwrap();
+        expect_activity(&mut rx, Duration::from_secs(1)).await;
+        advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW - Duration::from_secs(1)).await;
+        // Small jitter near the held value must not extend the deadline.
+        for value in [199, 201, 200] {
+            pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, value)])
+                .unwrap();
+        }
+        advance_reader_time(&mut rx, Duration::from_secs(2)).await;
+        expect_quiet(&mut rx).await;
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 128)])
+            .unwrap();
+        expect_activity(&mut rx, Duration::from_secs(1)).await;
+        reader.abort();
+        let _ = reader.await;
+        drop(pad);
+
+        // Attach a normal trigger already held. Its release is motion, but can
+        // never become an indefinitely held state due to startup calibration.
+        let (mut pad, path) = virtual_controller();
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 255)])
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let reader = tokio::spawn(read_controller(open_when_ready(&path).await, tx));
+        expect_quiet(&mut rx).await;
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 0)])
+            .unwrap();
+        expect_activity(&mut rx, Duration::from_secs(1)).await;
+        advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+        expect_quiet(&mut rx).await;
+        reader.abort();
+        let _ = reader.await;
     }
 
     #[tokio::test]
@@ -516,50 +621,93 @@ mod tests {
     }
 
     #[test]
-    fn stick_drift_is_ignored_but_deflection_and_release_count() {
-        let mut axis = Axis::new(
-            AbsoluteAxisCode::ABS_X,
-            AbsInfo::new(0, -32768, 32767, 16, 128, 0),
-        )
-        .unwrap();
-        for value in [1, -1, 200, -200, 4000, -4000, 0] {
-            assert!(!axis.update(value));
-            assert!(!axis.active());
+    fn axis_motion_accumulates_but_jitter_cannot_renew_the_window() {
+        let now = Instant::now();
+        let mut axis =
+            Axis::new(AbsoluteAxisCode::ABS_Z, AbsInfo::new(128, 0, 255, 0, 15, 0)).unwrap();
+        for value in [127, 129, 133, 138, 143, 147] {
+            assert!(!axis.update(value, now));
+            assert!(!axis.active(now));
         }
-        assert!(axis.update(20000));
-        assert!(axis.active());
-        assert!(!axis.update(20000));
-        assert!(axis.update(0));
-        assert!(!axis.active());
+        assert!(axis.update(148, now));
+        assert!(axis.active(now));
+        let before_expiry = now + AXIS_ACTIVITY_WINDOW - ACTIVITY_INTERVAL;
+        for value in [148, 149, 147, 150, 148] {
+            assert!(!axis.update(value, before_expiry));
+        }
+        assert!(axis.active(before_expiry));
+        assert!(!axis.active(now + AXIS_ACTIVITY_WINDOW));
+        // Returning toward the starting position counts as motion too, without
+        // treating that position as a guaranteed neutral for this controller.
+        let after_expiry = now + AXIS_ACTIVITY_WINDOW + ACTIVITY_INTERVAL;
+        assert!(axis.update(128, after_expiry));
+        assert!(axis.active(after_expiry));
     }
 
     #[test]
-    fn unsigned_sticks_and_signed_triggers_use_the_correct_neutral() {
-        let stick =
-            Axis::new(AbsoluteAxisCode::ABS_RX, AbsInfo::new(128, 0, 255, 0, 0, 0)).unwrap();
-        assert!(!stick.active());
-        let mut trigger = Axis::new(
-            AbsoluteAxisCode::ABS_Z,
-            AbsInfo::new(-32768, -32768, 32767, 0, 0, 0),
-        )
-        .unwrap();
-        assert!(!trigger.active());
-        assert!(!trigger.update(-30000));
-        assert!(trigger.update(0));
-        assert!(trigger.active());
-        assert!(trigger.update(-32768));
-        assert!(!trigger.active());
+    fn reported_layout_and_other_axis_positions_are_quiet_until_motion() {
+        let now = Instant::now();
+        let mut controls = Controls::default();
+        // Issue #107: Z/RZ are sticks, GAS/BRAKE are triggers. No layout
+        // inference or device-specific mapping is needed for these positions.
+        for (code, value) in [
+            (AbsoluteAxisCode::ABS_X, 128),
+            (AbsoluteAxisCode::ABS_Y, 127),
+            (AbsoluteAxisCode::ABS_Z, 128),
+            (AbsoluteAxisCode::ABS_RZ, 127),
+            (AbsoluteAxisCode::ABS_GAS, 0),
+            (AbsoluteAxisCode::ABS_BRAKE, 0),
+        ] {
+            controls.axes.insert(
+                code,
+                Axis::new(code, AbsInfo::new(value, 0, 255, 0, 15, 0)).unwrap(),
+            );
+            assert!(!controls.update(*AbsoluteAxisEvent::new(code, value), now));
+        }
+        assert!(!controls.active(now));
+        assert!(!controls.active(now + AXIS_ACTIVITY_WINDOW));
+
+        for code in [AbsoluteAxisCode::ABS_RX, AbsoluteAxisCode::ABS_Z] {
+            for (minimum, maximum) in [(0, 255), (-32768, 32767)] {
+                for value in [minimum, (minimum + maximum) / 2, maximum] {
+                    let axis =
+                        Axis::new(code, AbsInfo::new(value, minimum, maximum, 0, 0, 0)).unwrap();
+                    assert!(!axis.active(now));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trigger_held_at_attachment_and_released_cannot_stay_active_forever() {
+        let now = Instant::now();
+        for (minimum, maximum) in [(0, 255), (-32768, 32767)] {
+            let mut axis = Axis::new(
+                AbsoluteAxisCode::ABS_Z,
+                AbsInfo::new(maximum, minimum, maximum, 0, 0, 0),
+            )
+            .unwrap();
+            assert!(!axis.active(now));
+            assert!(!axis.update(maximum, now));
+            assert!(axis.update(minimum, now));
+            assert!(axis.active(now));
+            assert!(!axis.update(minimum, now + AXIS_ACTIVITY_WINDOW));
+            assert!(!axis.active(now + AXIS_ACTIVITY_WINDOW));
+        }
     }
 
     #[test]
     fn driver_deadzone_and_sensors_are_respected() {
-        let mut axis = Axis::new(
-            AbsoluteAxisCode::ABS_X,
-            AbsInfo::new(0, -100, 100, 0, 40, 0),
-        )
-        .unwrap();
-        assert!(!axis.update(39));
-        assert!(axis.update(41));
+        let now = Instant::now();
+        for (fuzz, flat) in [(0, 40), (40, 0)] {
+            let mut axis = Axis::new(
+                AbsoluteAxisCode::ABS_X,
+                AbsInfo::new(0, -100, 100, fuzz, flat, 0),
+            )
+            .unwrap();
+            assert!(!axis.update(40, now));
+            assert!(axis.update(41, now));
+        }
         assert!(
             Axis::new(
                 AbsoluteAxisCode::ABS_MISC,
@@ -567,26 +715,43 @@ mod tests {
             )
             .is_none()
         );
+        assert!(Axis::new(AbsoluteAxisCode::ABS_X, AbsInfo::new(0, 0, 0, 0, 0, 0)).is_none());
+        let mut wide = Axis::new(
+            AbsoluteAxisCode::ABS_X,
+            AbsInfo::new(i32::MIN, i32::MIN, i32::MAX, 0, 0, 0),
+        )
+        .unwrap();
+        assert!(wide.update(i32::MAX, now));
     }
 
     #[test]
-    fn buttons_and_dpad_track_holds_without_keyboard_or_repeat_noise() {
+    fn buttons_hold_indefinitely_but_axis_dpad_activity_is_bounded() {
+        let now = Instant::now();
+        let expired = now + AXIS_ACTIVITY_WINDOW;
         let mut controls = Controls::default();
         controls.axes.insert(
             AbsoluteAxisCode::ABS_HAT0X,
             Axis::new(AbsoluteAxisCode::ABS_HAT0X, AbsInfo::new(0, -1, 1, 0, 0, 0)).unwrap(),
         );
-        assert!(!controls.active());
-        assert!(!controls.update(*KeyEvent::new(KeyCode::KEY_A, 1)));
-        assert!(controls.update(*KeyEvent::new(KeyCode::BTN_SOUTH, 1)));
-        assert!(controls.active());
-        assert!(!controls.update(*KeyEvent::new(KeyCode::BTN_SOUTH, 2)));
-        assert!(controls.update(*KeyEvent::new(KeyCode::BTN_SOUTH, 0)));
-        assert!(!controls.active());
-        assert!(controls.update(*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, -1)));
-        assert!(controls.active());
-        assert!(controls.update(*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, 0)));
-        assert!(!controls.active());
+        assert!(!controls.active(now));
+        assert!(!controls.update(*KeyEvent::new(KeyCode::KEY_A, 1), now));
+        assert!(controls.update(*KeyEvent::new(KeyCode::BTN_SOUTH, 1), now));
+        assert!(controls.active(expired));
+        assert!(!controls.update(*KeyEvent::new(KeyCode::BTN_SOUTH, 2), expired));
+        assert!(controls.update(*KeyEvent::new(KeyCode::BTN_SOUTH, 0), expired));
+        assert!(!controls.active(expired));
+        assert!(controls.update(
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, -1),
+            now
+        ));
+        assert!(controls.active(now));
+        assert!(!controls.active(expired));
+        assert!(controls.update(
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, 0),
+            expired
+        ));
+        assert!(controls.active(expired));
+        assert!(!controls.active(expired + AXIS_ACTIVITY_WINDOW));
     }
 
     #[test]

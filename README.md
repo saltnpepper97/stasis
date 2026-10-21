@@ -289,11 +289,23 @@ sticks, and triggers as user activity independently of the compositor. No
 per-game configuration is needed for this input detection. Controllers can be
 plugged in or disconnected while Stasis is running.
 
-Held controls keep resetting the idle timer. A connected controller at rest
-does not prevent idle; timers restart from the last input when controls are
-released. Sticks use a 15% deadzone on either side of centre, triggers use 15%
-of their range, and larger driver-reported deadzones are respected. Controller
-motion sensors and touchpads are ignored.
+Digital buttons keep resetting the idle timer while held. Axis-based controls
+(sticks, triggers, and axis-based D-pad directions) count meaningful movement,
+without assuming which axis codes are sticks or where they rest. Axis values
+at connection never count as input, even if a stick or trigger is already held.
+
+Axis movement keeps resetting the idle timer for up to two minutes after the
+last meaningful change. Normal idle countdowns then run unless another input
+or inhibitor keeps the session active. This window also applies after releasing
+an axis-based control: without a known layout, release and deflection cannot
+reliably be distinguished. An unchanged axis cannot keep the session active
+forever. There are no additional configuration options.
+
+Movement must exceed 7.5% of the full axis range, or the driver's flat/fuzz value
+if larger, measured from connection or the last meaningful movement. Small
+changes accumulate against that reference; small jitter and repeated identical
+values do not renew the activity window. Controller motion sensors and
+touchpads are ignored.
 
 Stasis needs read access to the controller's `/dev/input/event*` device. It
 logs inaccessible controllers and retries if access becomes available. Desktop

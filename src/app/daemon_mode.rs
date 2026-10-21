@@ -56,7 +56,10 @@ pub async fn run(args: Args) -> Result<(), AnyError> {
     if let Err(e) = eventline::setup(Setup {
         verbose: args.verbose,
         level: None,
+        console_level: None,
+        file_level: None,
         file,
+        journal_retention: None,
     })
     .await
     {

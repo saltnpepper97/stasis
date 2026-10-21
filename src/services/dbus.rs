@@ -921,7 +921,7 @@ fn clean_metadata(value: Option<String>, max_chars: usize) -> Option<String> {
 }
 
 fn portal_option_string(
-    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    options: &HashMap<String, zbus::OwnedVariant>,
     key: &str,
 ) -> Option<String> {
     options
@@ -1035,11 +1035,9 @@ async fn spawn_dbus_inhibit_monitor(sink: Arc<dyn EventSink>) -> zbus::Result<()
                     if portal_inhibit_call {
                         let serial = header.primary().serial_num().get();
                         let identity = resolve_sender_identity(&resolver, &sender).await;
-                        let parsed = msg.body().deserialize::<(
-                            String,
-                            u32,
-                            HashMap<String, zbus::zvariant::OwnedValue>,
-                        )>();
+                        let parsed = msg
+                            .body()
+                            .deserialize::<(String, u32, HashMap<String, zbus::OwnedVariant>)>();
                         let (_window, flags, options) = parsed.unwrap_or_default();
                         let application = portal_option_string(&options, "app_id")
                             .or_else(|| portal_option_string(&options, "application"));
@@ -1088,8 +1086,7 @@ async fn spawn_dbus_inhibit_monitor(sink: Arc<dyn EventSink>) -> zbus::Result<()
                     }
 
                     // Portal Inhibit returns a request-handle object path.
-                    if let Ok(handle) = msg.body().deserialize::<zbus::zvariant::OwnedObjectPath>()
-                    {
+                    if let Ok(handle) = msg.body().deserialize::<zbus::OwnedObjectPath>() {
                         tracker_confirm_portal_handle(
                             &tracker,
                             &sink,
@@ -1141,9 +1138,9 @@ async fn spawn_dbus_inhibit_monitor(sink: Arc<dyn EventSink>) -> zbus::Result<()
 // misses a laptop which was already closed when Stasis started.
 async fn read_lid_state(connection: &Connection) -> zbus::Result<Option<bool>> {
     let proxy = zbus::proxy::Builder::<Proxy<'_>>::new(connection)
-        .destination("org.freedesktop.UPower")?
-        .path("/org/freedesktop/UPower")?
-        .interface("org.freedesktop.UPower")?
+        .destination("org.freedesktop.UPower")
+        .path("/org/freedesktop/UPower")
+        .interface("org.freedesktop.UPower")
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await?;
@@ -1173,11 +1170,11 @@ async fn publish_lid_state(connection: &Connection, sink: &Arc<dyn EventSink>, i
 async fn spawn_lid_monitor(connection: Connection, sink: Arc<dyn EventSink>) -> zbus::Result<()> {
     let rule = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
-        .sender("org.freedesktop.UPower")?
-        .interface("org.freedesktop.DBus.Properties")?
-        .member("PropertiesChanged")?
-        .path("/org/freedesktop/UPower")?
-        .build();
+        .sender("org.freedesktop.UPower")
+        .interface("org.freedesktop.DBus.Properties")
+        .member("PropertiesChanged")
+        .path("/org/freedesktop/UPower")
+        .build()?;
     // Subscribe before reading/activating UPower so no startup transition is lost.
     let mut stream = zbus::MessageStream::for_match_rule(rule, &connection, None).await?;
     publish_lid_state(&connection, &sink, true).await;
@@ -1185,14 +1182,11 @@ async fn spawn_lid_monitor(connection: Connection, sink: Arc<dyn EventSink>) -> 
         while let Some(msg) = stream.next().await {
             let Ok(msg) = msg else { continue };
             let body = msg.body();
-            let parsed: (
-                String,
-                HashMap<String, zbus::zvariant::Value<'_>>,
-                Vec<String>,
-            ) = match body.deserialize() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let parsed: (String, HashMap<String, zbus::Variant<'_>>, Vec<String>) =
+                match body.deserialize() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
             let (iface, changed, invalidated) = parsed;
             if iface == "org.freedesktop.UPower"
                 && (changed.contains_key("LidIsClosed")
@@ -1338,22 +1332,22 @@ async fn run_dbus(
             let rule = MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
                 .interface("org.freedesktop.DBus.Properties")
-                .and_then(|b| b.member("PropertiesChanged"))
-                .and_then(|b| b.path(session_path.clone()))
-                .map(|b| b.build());
+                .member("PropertiesChanged")
+                .path(session_path.clone())
+                .build();
 
             if let Ok(rule) = rule {
                 match zbus::MessageStream::for_match_rule(rule, sys, None).await {
                     Ok(mut stream) => {
                         let sink_lockedhint = sink.clone();
                         tokio::spawn(async move {
-                            use zbus::zvariant::Value;
+                            use zbus::Variant;
 
                             while let Some(msg) = stream.next().await {
                                 let Ok(msg) = msg else { continue };
 
                                 let body = msg.body();
-                                let parsed: (String, HashMap<String, Value>, Vec<String>) =
+                                let parsed: (String, HashMap<String, Variant>, Vec<String>) =
                                     match body.deserialize() {
                                         Ok(v) => v,
                                         Err(_) => continue,
@@ -1415,9 +1409,7 @@ async fn run_dbus(
 
 // ---- Session path resolution ----
 
-async fn get_current_session_path(
-    connection: &Connection,
-) -> zbus::Result<zbus::zvariant::OwnedObjectPath> {
+async fn get_current_session_path(connection: &Connection) -> zbus::Result<zbus::OwnedObjectPath> {
     let proxy = Proxy::new(
         connection,
         "org.freedesktop.login1",
@@ -1427,7 +1419,7 @@ async fn get_current_session_path(
     .await?;
 
     if let Ok(session_id) = std::env::var("XDG_SESSION_ID") {
-        let result: zbus::Result<zbus::zvariant::OwnedObjectPath> =
+        let result: zbus::Result<zbus::OwnedObjectPath> =
             proxy.call("GetSession", &(session_id.as_str(),)).await;
 
         if let Ok(path) = result {
@@ -1438,7 +1430,7 @@ async fn get_current_session_path(
 
     let uid: u32 = rustix::process::getuid().as_raw();
 
-    let sessions: Vec<(String, u32, String, String, zbus::zvariant::OwnedObjectPath)> =
+    let sessions: Vec<(String, u32, String, String, zbus::OwnedObjectPath)> =
         proxy.call("ListSessions", &()).await?;
 
     for (session_id, session_uid, _username, seat, path) in sessions.clone() {
@@ -1476,7 +1468,7 @@ async fn get_current_session_path(
     }
 
     let pid = std::process::id();
-    let path: zbus::zvariant::OwnedObjectPath = proxy.call("GetSessionByPID", &(pid,)).await?;
+    let path: zbus::OwnedObjectPath = proxy.call("GetSessionByPID", &(pid,)).await?;
     Ok(path)
 }
 
@@ -1702,12 +1694,12 @@ mod lid_dbus_tests {
     }
 
     async fn changed(server: &Connection, invalidated: bool) {
-        let values: HashMap<&str, zbus::zvariant::Value<'_>> = if invalidated {
+        let values: HashMap<&str, zbus::Variant<'_>> = if invalidated {
             HashMap::new()
         } else {
             // The test deliberately sends a stale value: the listener must use
             // current hardware state rather than a queued property snapshot.
-            HashMap::from([("LidIsClosed", zbus::zvariant::Value::Bool(true))])
+            HashMap::from([("LidIsClosed", zbus::Variant::Bool(true))])
         };
         let invalidated = if invalidated {
             vec!["LidIsClosed"]
@@ -1743,9 +1735,7 @@ mod lid_dbus_tests {
         let closed = Arc::new(AtomicBool::new(true));
         let present = Arc::new(AtomicBool::new(true));
         let server = zbus::connection::Builder::address(address.trim())
-            .unwrap()
             .name("org.freedesktop.UPower")
-            .unwrap()
             .serve_at(
                 "/org/freedesktop/UPower",
                 MockUPower {
@@ -1753,12 +1743,10 @@ mod lid_dbus_tests {
                     present: present.clone(),
                 },
             )
-            .unwrap()
             .build()
             .await
             .unwrap();
         let client = zbus::connection::Builder::address(address.trim())
-            .unwrap()
             .build()
             .await
             .unwrap();
