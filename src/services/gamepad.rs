@@ -325,30 +325,32 @@ mod tests {
     use tokio::time::timeout;
 
     fn virtual_controller() -> (VirtualDevice, PathBuf) {
+        virtual_controller_with_axes(&[
+            (
+                AbsoluteAxisCode::ABS_X,
+                AbsInfo::new(0, -32768, 32767, 16, 128, 0),
+            ),
+            (AbsoluteAxisCode::ABS_Z, AbsInfo::new(0, 0, 255, 0, 0, 0)),
+            (AbsoluteAxisCode::ABS_HAT0X, AbsInfo::new(0, -1, 1, 0, 0, 0)),
+        ])
+    }
+
+    fn virtual_controller_with_axes(
+        axes: &[(AbsoluteAxisCode, AbsInfo)],
+    ) -> (VirtualDevice, PathBuf) {
         let mut buttons = AttributeSet::new();
         buttons.insert(KeyCode::BTN_SOUTH);
-        let mut pad = VirtualDevice::builder()
+        let mut builder = VirtualDevice::builder()
             .unwrap()
             .name("Stasis gamepad regression test")
             .with_keys(&buttons)
-            .unwrap()
-            .with_absolute_axis(&UinputAbsSetup::new(
-                AbsoluteAxisCode::ABS_X,
-                AbsInfo::new(0, -32768, 32767, 16, 128, 0),
-            ))
-            .unwrap()
-            .with_absolute_axis(&UinputAbsSetup::new(
-                AbsoluteAxisCode::ABS_Z,
-                AbsInfo::new(0, 0, 255, 0, 0, 0),
-            ))
-            .unwrap()
-            .with_absolute_axis(&UinputAbsSetup::new(
-                AbsoluteAxisCode::ABS_HAT0X,
-                AbsInfo::new(0, -1, 1, 0, 0, 0),
-            ))
-            .unwrap()
-            .build()
             .unwrap();
+        for &(code, info) in axes {
+            builder = builder
+                .with_absolute_axis(&UinputAbsSetup::new(code, info))
+                .unwrap();
+        }
+        let mut pad = builder.build().unwrap();
         let path = pad
             .enumerate_dev_nodes_blocking()
             .unwrap()
@@ -420,9 +422,21 @@ mod tests {
         .expect("udev should make the test controller accessible")
     }
 
+    async fn advance_reader_time(rx: &mut mpsc::Receiver<ManagerMsg>, duration: Duration) {
+        // Let real evdev I/O settle before advancing only the reader's monotonic
+        // clock. This exercises the production two-minute bound without sleeping
+        // for minutes or changing its duration for tests.
+        tokio::time::sleep(ACTIVITY_INTERVAL).await;
+        while rx.try_recv().is_ok() {}
+        tokio::time::pause();
+        tokio::time::advance(duration).await;
+        tokio::time::resume();
+        while rx.try_recv().is_ok() {}
+    }
+
     #[tokio::test]
     #[ignore = "requires read/write access to /dev/uinput and generated input devices"]
-    async fn linux_input_reader_filters_drift_tracks_holds_and_disconnects() {
+    async fn linux_input_reader_filters_motion_bounds_axis_holds_and_disconnects() {
         let (mut pad, path) = virtual_controller();
         assert!(discover_controllers().unwrap().contains(&path));
         let (tx, mut rx) = mpsc::channel(32);
@@ -438,27 +452,40 @@ mod tests {
             (
                 *KeyEvent::new(KeyCode::BTN_SOUTH, 1),
                 *KeyEvent::new(KeyCode::BTN_SOUTH, 0),
+                false,
             ),
             (
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_X, 20000),
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_X, 0),
+                true,
             ),
             (
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 200),
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 0),
+                true,
             ),
             (
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, -1),
                 *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, 0),
+                true,
             ),
         ];
-        for (press, release) in controls {
+        for (press, release, axis_based) in controls {
             pad.emit(&[press]).unwrap();
             for _ in 0..4 {
                 expect_activity(&mut rx, Duration::from_secs(1)).await;
             }
+            advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+            if axis_based {
+                expect_quiet(&mut rx).await;
+            } else {
+                expect_activity(&mut rx, Duration::from_secs(1)).await;
+            }
             pad.emit(&[release]).unwrap();
             expect_activity(&mut rx, Duration::from_secs(1)).await;
+            if axis_based {
+                advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+            }
             expect_quiet(&mut rx).await;
         }
         drop(pad);
@@ -469,6 +496,73 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires read/write access to /dev/uinput and generated input devices"]
+    async fn linux_input_reader_handles_alternate_layout_and_trigger_held_at_attachment() {
+        let positions = [
+            (AbsoluteAxisCode::ABS_X, 128),
+            (AbsoluteAxisCode::ABS_Y, 127),
+            (AbsoluteAxisCode::ABS_Z, 128),
+            (AbsoluteAxisCode::ABS_RZ, 127),
+            (AbsoluteAxisCode::ABS_GAS, 0),
+            (AbsoluteAxisCode::ABS_BRAKE, 0),
+        ];
+        let axes: Vec<_> = positions
+            .iter()
+            .map(|&(code, value)| (code, AbsInfo::new(value, 0, 255, 0, 15, 0)))
+            .collect();
+        let (mut pad, path) = virtual_controller_with_axes(&axes);
+        let initial_events: Vec<_> = positions
+            .iter()
+            .map(|&(code, value)| *AbsoluteAxisEvent::new(code, value))
+            .collect();
+        pad.emit(&initial_events).unwrap();
+        let device = open_when_ready(&path).await;
+        let state = device.get_absinfo().unwrap().collect::<HashMap<_, _>>();
+        for (code, value) in positions {
+            assert_eq!(state[&code].value(), value);
+        }
+        let (tx, mut rx) = mpsc::channel(32);
+        let reader = tokio::spawn(read_controller(device, tx));
+        expect_quiet(&mut rx).await;
+        advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+        expect_quiet(&mut rx).await;
+
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 200)])
+            .unwrap();
+        expect_activity(&mut rx, Duration::from_secs(1)).await;
+        advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW - Duration::from_secs(1)).await;
+        // Small jitter near the held value must not extend the deadline.
+        for value in [199, 201, 200] {
+            pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, value)])
+                .unwrap();
+        }
+        advance_reader_time(&mut rx, Duration::from_secs(2)).await;
+        expect_quiet(&mut rx).await;
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 128)])
+            .unwrap();
+        expect_activity(&mut rx, Duration::from_secs(1)).await;
+        reader.abort();
+        let _ = reader.await;
+        drop(pad);
+
+        // Attach a normal trigger already held. Its release is motion, but can
+        // never become an indefinitely held state due to startup calibration.
+        let (mut pad, path) = virtual_controller();
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 255)])
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let reader = tokio::spawn(read_controller(open_when_ready(&path).await, tx));
+        expect_quiet(&mut rx).await;
+        pad.emit(&[*AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Z, 0)])
+            .unwrap();
+        expect_activity(&mut rx, Duration::from_secs(1)).await;
+        advance_reader_time(&mut rx, AXIS_ACTIVITY_WINDOW).await;
+        expect_quiet(&mut rx).await;
+        reader.abort();
+        let _ = reader.await;
     }
 
     #[tokio::test]
