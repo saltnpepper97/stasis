@@ -291,8 +291,8 @@ plugged in or disconnected while Stasis is running.
 
 Digital buttons keep resetting the idle timer while held. Axis-based controls
 (sticks, triggers, and axis-based D-pad directions) count meaningful movement,
-without assuming which axis codes are sticks or where they rest. An untouched
-controller does not prevent idle, even if a control is held when it connects.
+without assuming which axis codes are sticks or where they rest. Axis values
+at connection never count as input, even if a stick or trigger is already held.
 
 Axis movement keeps resetting the idle timer for up to two minutes after the
 last meaningful change. Normal idle countdowns then run unless another input

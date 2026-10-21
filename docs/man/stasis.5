@@ -77,8 +77,8 @@ session launcher guidance).
 Counts Linux gamepad input as user activity (default true). Supports controller
 hotplug, buttons, D-pad, sticks, and triggers. Digital buttons keep resetting
 the idle timer while held. Axis-based controls count meaningful movement
-without assuming a stick/trigger layout or resting position. An untouched
-controller does not prevent idle, including controls held at connection.
+without assuming a stick/trigger layout or resting position. Axis values at
+connection never count as input, even if a stick or trigger is already held.
 .PP
 Axis movement resets idle timers for up to two minutes after the last meaningful
 change, then normal idle countdowns run unless another input or inhibitor keeps
