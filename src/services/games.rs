@@ -729,6 +729,7 @@ pub async fn run_games(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
 
     struct NativeGame {
         root: PathBuf,
@@ -763,7 +764,13 @@ mod tests {
             // writable descriptor. Retry the transient exec-busy condition.
             let mut attempts = 0;
             let child = loop {
-                match std::process::Command::new(&exe).arg("30").spawn() {
+                // Multicall coreutils dispatches by argv[0], while process
+                // discovery still sees the distinct copied executable path.
+                match std::process::Command::new(&exe)
+                    .arg0("sleep")
+                    .arg("30")
+                    .spawn()
+                {
                     Ok(child) => break child,
                     Err(error) if error.raw_os_error() == Some(26) && attempts < 20 => {
                         attempts += 1;
