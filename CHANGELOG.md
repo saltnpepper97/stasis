@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Game-process tests now invoke the copied `sleep` executable with its original command name, fixing failures with multicall Coreutils on Nix and other systems ([#109](https://github.com/saltnpepper97/stasis/issues/109)).
 - Controllers with alternate axis layouts, including centered sticks on `ABS_Z`/`ABS_RZ`, no longer synthesize activity indefinitely while untouched. Initial axis values alone never count as input, and small jitter cannot renew the bounded activity window ([#107](https://github.com/saltnpepper97/stasis/issues/107)).
 - Preserved tray single-instance ownership and uncached lid monitoring while adapting to deferred D-Bus builder validation. Regression coverage exercises private-bus name ownership and legacy configuration interpolation with shell punctuation.
 
