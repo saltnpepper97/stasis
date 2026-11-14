@@ -6,6 +6,7 @@
   wayland,
   wayland-protocols,
   dbus,
+  sqlite,
   pkg-config,
   coreutils,
 }:
@@ -31,6 +32,7 @@ rustPlatform.buildRustPackage {
     wayland
     wayland-protocols
     dbus
+    sqlite
   ];
 
   postInstall = ''
